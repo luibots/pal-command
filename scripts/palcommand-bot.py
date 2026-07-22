@@ -127,11 +127,9 @@ class PalBot(discord.Client):
         self.known_mod_ids = None    # None = not primed yet
 
     async def setup_hook(self):
-        # Global sync makes the commands available everywhere eventually, but Discord
-        # caches global commands for up to an hour. The per-guild sync in on_ready is
-        # what makes them show up immediately.
-        await self.tree.sync()
-        log.info("slash commands synced globally")
+        # NOTE: deliberately no global sync. Registering both globally and per-guild makes
+        # every command appear TWICE in the Discord picker. Guild-only sync (in on_ready)
+        # is also instant, whereas global commands take up to an hour to propagate.
         self.watch_server.start()
         self.watch_mods.start()
 
@@ -225,12 +223,27 @@ class PalBot(discord.Client):
     async def _before_watch_mods(self):
         await self.wait_until_ready()
 
+    async def on_interaction(self, interaction: discord.Interaction):
+        # Diagnostic: proves whether slash commands are actually reaching the bot.
+        try:
+            name = interaction.data.get("name") if interaction.data else "?"
+        except Exception:  # noqa: BLE001
+            name = "?"
+        log.info(
+            "INTERACTION received: /%s from %s in #%s",
+            name,
+            getattr(interaction.user, "name", "?"),
+            getattr(interaction.channel, "name", "?"),
+        )
+
     async def on_ready(self):
         log.info("connected as %s", self.user)
         # Copy the commands into every guild we are in and sync there: guild-scoped
         # commands appear instantly, unlike the global ones.
         for g in self.guilds:
             try:
+                # copy_global_to puts the locally-defined commands into this guild's
+                # bucket; syncing the guild then registers them for instant use.
                 self.tree.copy_global_to(guild=g)
                 await self.tree.sync(guild=g)
                 log.info("commands synced to guild %s (%s) - available now", g.name, g.id)
