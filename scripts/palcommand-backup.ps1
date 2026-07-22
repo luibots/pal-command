@@ -16,6 +16,10 @@ param(
   [switch]$SetupSecrets,
   [string]$SftpPassword,
   [string]$AdminPassword,
+  [switch]$SetupDiscord,
+  [string]$DiscordToken,
+  [string]$DiscordChannelId,
+  [switch]$TestDiscord,
   [switch]$Quiet
 )
 
@@ -49,6 +53,52 @@ function Read-Secret([string]$name) {
   $sec = Get-Content $p | ConvertTo-SecureString
   [Runtime.InteropServices.Marshal]::PtrToStringAuto(
     [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
+}
+
+# One-time Discord setup (DPAPI). The bot token is a credential - same treatment as the rest.
+if ($SetupDiscord) {
+  if (-not $DiscordToken -or -not $DiscordChannelId) { throw 'Provide -DiscordToken and -DiscordChannelId.' }
+  ($DiscordToken | ConvertTo-SecureString -AsPlainText -Force | ConvertFrom-SecureString) | Out-File (Join-Path $autoDir 'discord_token.sec') -Encoding ascii
+  $DiscordChannelId.Trim() | Out-File (Join-Path $autoDir 'discord_channel.txt') -Encoding ascii
+  Log 'Discord token stored (DPAPI) and alert channel set.'
+  return
+}
+
+# Post an embed to the alert channel. Works whether or not the bot process is running.
+function Send-DiscordAlert([string]$title, [string]$desc, [int]$colour, $fields) {
+  $tokenFile = Join-Path $autoDir 'discord_token.sec'
+  $chanFile  = Join-Path $autoDir 'discord_channel.txt'
+  if (-not (Test-Path $tokenFile) -or -not (Test-Path $chanFile)) { return }
+  try {
+    $sec = Get-Content $tokenFile | ConvertTo-SecureString
+    $tok = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+             [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
+    $chan = (Get-Content $chanFile -Raw).Trim()
+    $embed = @{
+      title       = $title
+      description = $desc
+      color       = $colour
+      timestamp   = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+      footer      = @{ text = 'PAL COMMAND' }
+    }
+    if ($fields) { $embed['fields'] = @($fields) }
+    $json  = (@{ embeds = @($embed) } | ConvertTo-Json -Depth 8 -Compress)
+    $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+    Invoke-RestMethod -Uri "https://discord.com/api/v10/channels/$chan/messages" -Method Post `
+      -Headers @{ Authorization = "Bot $tok" } -ContentType 'application/json' -Body $bytes -TimeoutSec 15 | Out-Null
+  } catch { Log "Discord alert failed: $_" }
+}
+
+if ($TestDiscord) {
+  $tokenFile = Join-Path $autoDir 'discord_token.sec'
+  $chanFile  = Join-Path $autoDir 'discord_channel.txt'
+  if (-not (Test-Path $tokenFile) -or -not (Test-Path $chanFile)) {
+    Log 'Discord is NOT set up yet - nothing was sent. Run -SetupDiscord with your bot token and channel id first.'
+    return
+  }
+  Send-DiscordAlert 'PAL COMMAND connected' 'Alerts are wired up. You will get a message here when a backup runs, when the server goes down, and when a new mod is published.' 16098596 $null
+  Log 'Test alert sent - check your Discord channel.'
+  return
 }
 
 try {
@@ -197,9 +247,28 @@ try {
   }
   Pop-Location
   Log ("git: committed={0} pushed={1}" -f $committed, $pushed)
+
+  $sizeMb = [math]::Round((Get-Item $archive).Length / 1MB, 2)
+  Send-DiscordAlert 'Backup complete' `
+    ("World saved and{0} stored." -f $(if ($pushed) { ' pushed off-site' } else { ' committed locally' })) `
+    2278750 `
+    @(
+      @{ name = 'When';      value = (Get-Date -Format 'yyyy-MM-dd HH:mm'); inline = $true },
+      @{ name = 'World';     value = ("{0}{1}" -f $world, $day);            inline = $true },
+      @{ name = 'Size';      value = "$sizeMb MB";                          inline = $true },
+      @{ name = 'Players';   value = "$($players.Count) saves";             inline = $true },
+      @{ name = 'Off-site';  value = $(if ($pushed) { 'Yes' } else { 'No' }); inline = $true }
+    )
   Log '=== backup done ==='
 }
 catch {
   Log "ERROR: $_"
+  Send-DiscordAlert 'BACKUP FAILED' `
+    ("The scheduled Palworld backup did not complete.`n``````$_``````") `
+    15680580 `
+    @(
+      @{ name = 'When'; value = (Get-Date -Format 'yyyy-MM-dd HH:mm'); inline = $true },
+      @{ name = 'What to do'; value = 'Check the log at %APPDATA%\com.luibots.palcommand\auto\backup.log'; inline = $false }
+    )
   exit 1
 }
