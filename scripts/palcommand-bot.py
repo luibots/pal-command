@@ -61,6 +61,18 @@ def load_settings() -> dict:
         return {}
 
 
+def world_to_map(x, y):
+    """Palworld world units -> the coordinates shown on the in-game map.
+
+    Community-derived conversion. If these read a little off versus what the map
+    shows in game, adjust the offsets here - the 460 divisor is the scale factor.
+    """
+    try:
+        return (float(y) - 123000.0) / 460.0, (float(x) + 158000.0) / 460.0
+    except (TypeError, ValueError):
+        return None, None
+
+
 def human_uptime(seconds) -> str:
     try:
         s = int(seconds)
@@ -324,6 +336,10 @@ async def cmd_players(interaction: discord.Interaction):
             bits.append(f"Lv {p['level']}")
         if p.get("ping") is not None:
             bits.append(f"{round(float(p['ping']))} ms")
+        if p.get("location_x") is not None and p.get("location_y") is not None:
+            mx_, my_ = world_to_map(p["location_x"], p["location_y"])
+            if mx_ is not None:
+                bits.append(f"map {mx_:.0f}, {my_:.0f}")
         e.add_field(name=name, value=(" - ".join(bits) or "online"), inline=True)
         lines.append(f"- **{name}** {(' - '.join(bits))}".rstrip())
     text = f"**Online now ({len(players)})**\n" + "\n".join(lines)
