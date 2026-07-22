@@ -84,9 +84,24 @@ function Send-DiscordAlert([string]$title, [string]$desc, [int]$colour, $fields)
     if ($fields) { $embed['fields'] = @($fields) }
     $json  = (@{ embeds = @($embed) } | ConvertTo-Json -Depth 8 -Compress)
     $bytes = [Text.Encoding]::UTF8.GetBytes($json)
-    Invoke-RestMethod -Uri "https://discord.com/api/v10/channels/$chan/messages" -Method Post `
-      -Headers @{ Authorization = "Bot $tok" } -ContentType 'application/json' -Body $bytes -TimeoutSec 15 | Out-Null
-  } catch { Log "Discord alert failed: $_" }
+    # Discord REJECTS bot calls to guild/channel endpoints unless a proper DiscordBot
+    # User-Agent is sent, and reports it as the very misleading 40333 "internal network error".
+    $headers = @{
+      Authorization = "Bot $tok"
+      'User-Agent'  = 'DiscordBot (https://github.com/luibots/pal-command, 0.1)'
+    }
+    for ($try = 1; $try -le 3; $try++) {
+      try {
+        Invoke-RestMethod -Uri "https://discord.com/api/v10/channels/$chan/messages" -Method Post `
+          -Headers $headers -ContentType 'application/json' -Body $bytes -TimeoutSec 15 | Out-Null
+        return $true
+      } catch {
+        if ($try -eq 3) { Log "Discord alert failed after 3 tries: $_"; return $false }
+        Start-Sleep -Seconds ($try * 2)
+      }
+    }
+  } catch { Log "Discord alert failed: $_"; return $false }
+  return $false
 }
 
 if ($TestDiscord) {
@@ -96,8 +111,9 @@ if ($TestDiscord) {
     Log 'Discord is NOT set up yet - nothing was sent. Run -SetupDiscord with your bot token and channel id first.'
     return
   }
-  Send-DiscordAlert 'PAL COMMAND connected' 'Alerts are wired up. You will get a message here when a backup runs, when the server goes down, and when a new mod is published.' 16098596 $null
-  Log 'Test alert sent - check your Discord channel.'
+  $sent = Send-DiscordAlert 'PAL COMMAND connected' 'Alerts are wired up. You will get a message here when a backup runs, when the server goes down, and when a new mod is published.' 16098596 $null
+  if ($sent) { Log 'Test alert SENT - check your Discord channel.' }
+  else       { Log 'Test alert FAILED - see the error above. Nothing was posted.' }
   return
 }
 
@@ -249,7 +265,7 @@ try {
   Log ("git: committed={0} pushed={1}" -f $committed, $pushed)
 
   $sizeMb = [math]::Round((Get-Item $archive).Length / 1MB, 2)
-  Send-DiscordAlert 'Backup complete' `
+  $null = Send-DiscordAlert 'Backup complete' `
     ("World saved and{0} stored." -f $(if ($pushed) { ' pushed off-site' } else { ' committed locally' })) `
     2278750 `
     @(
@@ -263,7 +279,7 @@ try {
 }
 catch {
   Log "ERROR: $_"
-  Send-DiscordAlert 'BACKUP FAILED' `
+  $null = Send-DiscordAlert 'BACKUP FAILED' `
     ("The scheduled Palworld backup did not complete.`n``````$_``````") `
     15680580 `
     @(

@@ -49,5 +49,14 @@ $env:PALCMD_DISCORD_TOKEN   = $token
 $env:PALCMD_DISCORD_CHANNEL = $chan
 $env:PALCMD_ADMIN_PW        = $adminPw
 
-Write-Host 'Starting PAL COMMAND Discord bot...'
-& python $botPy
+$log = Join-Path $autoDir 'bot.log'
+Write-Host "Starting PAL COMMAND Discord bot... (log: $log)"
+("[{0}] --- bot starting ---" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) | Add-Content -Path $log -Encoding utf8
+
+# discord.py logs to stderr. Under $ErrorActionPreference='Stop', piping native stderr
+# with 2>&1 raises NativeCommandError and kills the launcher - so drop to Continue and
+# redirect every stream straight to the log file instead of through a pipeline.
+$ErrorActionPreference = 'Continue'
+# (*>> writes UTF-16 in PS 5.1, which makes the log unreadable - pipe to Out-File as UTF-8.
+#  Safe to use a pipeline here now that ErrorActionPreference is Continue.)
+& python $botPy *>&1 | Out-File -FilePath $log -Append -Encoding utf8
