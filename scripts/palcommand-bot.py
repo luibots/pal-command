@@ -127,8 +127,11 @@ class PalBot(discord.Client):
         self.known_mod_ids = None    # None = not primed yet
 
     async def setup_hook(self):
+        # Global sync makes the commands available everywhere eventually, but Discord
+        # caches global commands for up to an hour. The per-guild sync in on_ready is
+        # what makes them show up immediately.
         await self.tree.sync()
-        log.info("slash commands synced")
+        log.info("slash commands synced globally")
         self.watch_server.start()
         self.watch_mods.start()
 
@@ -224,6 +227,15 @@ class PalBot(discord.Client):
 
     async def on_ready(self):
         log.info("connected as %s", self.user)
+        # Copy the commands into every guild we are in and sync there: guild-scoped
+        # commands appear instantly, unlike the global ones.
+        for g in self.guilds:
+            try:
+                self.tree.copy_global_to(guild=g)
+                await self.tree.sync(guild=g)
+                log.info("commands synced to guild %s (%s) - available now", g.name, g.id)
+            except Exception as e:  # noqa: BLE001
+                log.error("guild sync failed for %s: %s", g.id, e)
         await self.change_presence(
             activity=discord.Activity(type=discord.ActivityType.watching, name="the Palworld server")
         )
