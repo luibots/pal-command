@@ -82,7 +82,11 @@ function Send-DiscordAlert([string]$title, [string]$desc, [int]$colour, $fields)
       footer      = @{ text = 'PAL COMMAND' }
     }
     if ($fields) { $embed['fields'] = @($fields) }
-    $json  = (@{ embeds = @($embed) } | ConvertTo-Json -Depth 8 -Compress)
+    # Always include a plain-text mirror - Discord clients can have embeds switched off,
+    # in which case an embed-only message renders completely blank.
+    $mirror = "**$title** - $desc"
+    if ($fields) { $mirror += "`n" + (($fields | ForEach-Object { "$($_.name): $($_.value)" }) -join ' | ') }
+    $json  = (@{ content = $mirror.Substring(0, [Math]::Min(1900, $mirror.Length)); embeds = @($embed) } | ConvertTo-Json -Depth 8 -Compress)
     $bytes = [Text.Encoding]::UTF8.GetBytes($json)
     # Discord REJECTS bot calls to guild/channel endpoints unless a proper DiscordBot
     # User-Agent is sent, and reports it as the very misleading 40333 "internal network error".

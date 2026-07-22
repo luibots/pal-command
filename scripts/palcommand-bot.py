@@ -133,7 +133,7 @@ class PalBot(discord.Client):
         self.watch_server.start()
         self.watch_mods.start()
 
-    async def alert(self, embed: discord.Embed):
+    async def alert(self, embed: discord.Embed, text: str = ""):
         if not CHANNEL_ID:
             return
         ch = self.get_channel(CHANNEL_ID)
@@ -143,8 +143,11 @@ class PalBot(discord.Client):
             except Exception as e:  # noqa: BLE001
                 log.error("alert channel %s unreachable: %s", CHANNEL_ID, e)
                 return
+        # Always send a plain-text mirror: clients with embeds turned off see nothing otherwise.
+        if not text:
+            text = f"**{embed.title}**" + (f" - {embed.description}" if embed.description else "")
         try:
-            await ch.send(embed=embed)
+            await ch.send(content=text[:1900], embed=embed)
         except Exception as e:  # noqa: BLE001
             log.error("could not post alert: %s", e)
 
@@ -274,6 +277,7 @@ async def cmd_status(interaction: discord.Interaction):
     e = discord.Embed(title=info.get("servername", "Palworld Server"), colour=GREEN)
     if info.get("version"):
         e.set_footer(text=f"v{info['version']}")
+    bits = []
     if mx:
         e.add_field(name="Players", value=f"{mx.get('currentplayernum', '?')} / {mx.get('maxplayernum', '?')}")
         e.add_field(name="In-game day", value=str(mx.get("days", "?")))
@@ -283,7 +287,16 @@ async def cmd_status(interaction: discord.Interaction):
             e.add_field(name="Server FPS", value=str(fps))
         if mx.get("basecampnum") is not None:
             e.add_field(name="Base camps", value=str(mx["basecampnum"]))
-    await interaction.followup.send(embed=e)
+        bits = [
+            f"{mx.get('currentplayernum', '?')}/{mx.get('maxplayernum', '?')} online",
+            f"day {mx.get('days', '?')}",
+            f"up {human_uptime(mx.get('uptime'))}",
+        ]
+        if fps is not None:
+            bits.append(f"{fps} FPS")
+    # Plain-text mirror: some clients have embeds switched off entirely.
+    text = f"**{info.get('servername', 'Palworld Server')}** - " + " | ".join(bits) if bits else "Server is up."
+    await interaction.followup.send(content=text, embed=e)
 
 
 @bot.tree.command(name="players", description="Who is online right now")
@@ -297,11 +310,13 @@ async def cmd_players(interaction: discord.Interaction):
         return
     if not players:
         await interaction.followup.send(
-            embed=discord.Embed(title="Nobody online", description="The island is quiet.", colour=GREY)
+            content="**Nobody online** - the island is quiet.",
+            embed=discord.Embed(title="Nobody online", description="The island is quiet.", colour=GREY),
         )
         return
 
     e = discord.Embed(title=f"Online now ({len(players)})", colour=GREEN)
+    lines = []
     for p in players[:25]:
         name = p.get("name") or p.get("accountName") or "unknown"
         bits = []
@@ -310,7 +325,9 @@ async def cmd_players(interaction: discord.Interaction):
         if p.get("ping") is not None:
             bits.append(f"{round(float(p['ping']))} ms")
         e.add_field(name=name, value=(" - ".join(bits) or "online"), inline=True)
-    await interaction.followup.send(embed=e)
+        lines.append(f"- **{name}** {(' - '.join(bits))}".rstrip())
+    text = f"**Online now ({len(players)})**\n" + "\n".join(lines)
+    await interaction.followup.send(content=text[:1900], embed=e)
 
 
 @bot.tree.command(name="mods", description="The guild mod set and how to install it")
@@ -333,10 +350,13 @@ async def cmd_mods(interaction: discord.Interaction):
         description="Download **Palworld Mod Manager.bat** from the mods page, double-click it, tick what you want, press Apply.",
         colour=AMBER,
     )
+    lines = ["**Guild Mods** - grab `Palworld Mod Manager.bat`, double-click, tick, Apply."]
     for m in mods:
         e.add_field(name=m.get("name", "?"), value=m.get("description", ""), inline=False)
+        lines.append(f"- **{m.get('name', '?')}** - {m.get('description', '')}")
     e.add_field(name="Mods page", value="https://github.com/luibots/palworld-mods", inline=False)
-    await interaction.followup.send(embed=e)
+    lines.append("<https://github.com/luibots/palworld-mods>")
+    await interaction.followup.send(content="\n".join(lines)[:1900], embed=e)
 
 
 @bot.tree.command(name="backup", description="When the world was last backed up")
@@ -369,7 +389,12 @@ async def cmd_backup(interaction: discord.Interaction):
         value="Yes - pushed to private GitHub" if offsite else "No - local only",
         inline=False,
     )
-    await interaction.followup.send(embed=e)
+    text = (
+        f"**Backup status** - last {when.strftime('%Y-%m-%d %H:%M')} | "
+        f"{size_mb:.1f} MB | {len(snaps)} snapshots | "
+        f"off-site: {'yes' if offsite else 'no'}"
+    )
+    await interaction.followup.send(content=text, embed=e)
 
 
 def main():
