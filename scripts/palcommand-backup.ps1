@@ -64,6 +64,19 @@ if ($SetupDiscord) {
   return
 }
 
+# Friendly 12-hour Pacific timestamp, e.g. "Jul 22, 6:45 PM PDT". Converts explicitly
+# rather than assuming the machine clock is already Pacific.
+function Get-PacificTime {
+  try {
+    $tz  = [TimeZoneInfo]::FindSystemTimeZoneById('Pacific Standard Time')
+    $now = [TimeZoneInfo]::ConvertTime([DateTimeOffset]::Now, $tz)
+    $label = if ($tz.IsDaylightSavingTime($now)) { 'PDT' } else { 'PST' }
+    return ($now.ToString('MMM d, h:mm tt') + " $label")
+  } catch {
+    return (Get-Date -Format 'MMM d, h:mm tt')
+  }
+}
+
 # Post an embed to the alert channel. Works whether or not the bot process is running.
 function Send-DiscordAlert([string]$title, [string]$desc, [int]$colour, $fields) {
   $tokenFile = Join-Path $autoDir 'discord_token.sec'
@@ -273,7 +286,7 @@ try {
     ("World saved and{0} stored." -f $(if ($pushed) { ' pushed off-site' } else { ' committed locally' })) `
     2278750 `
     @(
-      @{ name = 'When';      value = (Get-Date -Format 'yyyy-MM-dd HH:mm'); inline = $true },
+      @{ name = 'When';      value = (Get-PacificTime); inline = $true },
       @{ name = 'World';     value = ("{0}{1}" -f $world, $day);            inline = $true },
       @{ name = 'Size';      value = "$sizeMb MB";                          inline = $true },
       @{ name = 'Players';   value = "$($players.Count) saves";             inline = $true },

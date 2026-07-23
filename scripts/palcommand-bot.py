@@ -61,6 +61,26 @@ def load_settings() -> dict:
         return {}
 
 
+try:
+    from zoneinfo import ZoneInfo
+
+    PACIFIC = ZoneInfo("America/Los_Angeles")
+except Exception:  # noqa: BLE001 - tzdata missing; fall back to machine local time
+    PACIFIC = None
+
+
+def fmt_pacific(dt: datetime) -> str:
+    """Format a datetime as friendly 12-hour Pacific time, e.g. 'Jul 22, 6:45 PM PT'."""
+    if PACIFIC is not None:
+        if dt.tzinfo is None:
+            dt = dt.astimezone()  # attach machine local tz, then convert
+        dt = dt.astimezone(PACIFIC)
+        label = dt.tzname() or "PT"  # PST or PDT depending on the date
+    else:
+        label = "local"
+    return dt.strftime("%b %d, %I:%M %p").replace(" 0", " ") + f" {label}"
+
+
 def world_to_map(x, y):
     """Palworld world units -> the coordinates shown on the in-game map.
 
@@ -400,7 +420,7 @@ async def cmd_backup(interaction: discord.Interaction):
     size_mb = newest.stat().st_size / 1_048_576
     offsite = bool(s.get("repo_remote"))
     e = discord.Embed(title="Backup status", colour=GREEN if offsite else AMBER)
-    e.add_field(name="Last backup", value=when.strftime("%Y-%m-%d %H:%M"))
+    e.add_field(name="Last backup", value=fmt_pacific(when))
     e.add_field(name="Size", value=f"{size_mb:.1f} MB")
     e.add_field(name="Snapshots kept", value=str(len(snaps)))
     e.add_field(
@@ -409,7 +429,7 @@ async def cmd_backup(interaction: discord.Interaction):
         inline=False,
     )
     text = (
-        f"**Backup status** - last {when.strftime('%Y-%m-%d %H:%M')} | "
+        f"**Backup status** - last {fmt_pacific(when)} | "
         f"{size_mb:.1f} MB | {len(snaps)} snapshots | "
         f"off-site: {'yes' if offsite else 'no'}"
     )
