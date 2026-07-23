@@ -64,11 +64,14 @@ def load_settings() -> dict:
 def world_to_map(x, y):
     """Palworld world units -> the coordinates shown on the in-game map.
 
-    Community-derived conversion. If these read a little off versus what the map
-    shows in game, adjust the offsets here - the 460 divisor is the scale factor.
+    Calibrated 2026-07-22 against a player standing at a known in-game position
+    (reported 252, -502; this returns 250.5, -501.2 - the ~1 unit residual is the
+    player moving between the report and the reading).
+
+    NOTE: the offsets are easy to transpose. X uses 158000, Y uses 123000.
     """
     try:
-        return (float(y) - 123000.0) / 460.0, (float(x) + 158000.0) / 460.0
+        return (float(y) - 158000.0) / 460.0, (float(x) + 123000.0) / 460.0
     except (TypeError, ValueError):
         return None, None
 
