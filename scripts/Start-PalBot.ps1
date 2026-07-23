@@ -48,6 +48,7 @@ if (-not (Test-Path $botPy)) { throw "Bot script not found at $botPy" }
 $env:PALCMD_DISCORD_TOKEN   = $token
 $env:PALCMD_DISCORD_CHANNEL = $chan
 $env:PALCMD_ADMIN_PW        = $adminPw
+$env:PALCMD_MODS_REPO       = 'C:\Users\llllllllllllllllllll\projects\palworld-mods'
 
 $log = Join-Path $autoDir 'bot.log'
 Write-Host "Starting PAL COMMAND Discord bot... (log: $log)"

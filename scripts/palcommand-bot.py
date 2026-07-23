@@ -20,7 +20,9 @@ import json
 import logging
 import os
 import pathlib
+import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 
 import aiohttp
@@ -41,6 +43,12 @@ ADMIN_PW = os.environ.get("PALCMD_ADMIN_PW", "")
 MODS_MANIFEST = os.environ.get(
     "PALCMD_MODS_MANIFEST",
     "https://raw.githubusercontent.com/luibots/palworld-mods/master/mods.json",
+)
+# Local mods repo on the host - used to build the self-contained bundle for /getmods,
+# so distribution stays private (nothing served from a public repo).
+MODS_REPO = os.environ.get(
+    "PALCMD_MODS_REPO",
+    r"C:\Users\llllllllllllllllllll\projects\palworld-mods",
 )
 
 AMBER = 0xF5A524
@@ -111,6 +119,28 @@ def human_uptime(seconds) -> str:
     if h:
         return f"{h}h {m}m"
     return f"{m}m"
+
+
+async def fetch_manifest():
+    """Read the mod manifest - local repo first (works while the repo is private),
+    falling back to the public URL if a local copy isn't present."""
+    local = os.path.join(MODS_REPO, "mods.json")
+    if os.path.isfile(local):
+        try:
+            with open(local, "r", encoding="utf-8-sig") as f:
+                return json.load(f)
+        except Exception as e:  # noqa: BLE001
+            log.debug("local manifest read failed: %s", e)
+    try:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout) as s:
+            async with s.get(MODS_MANIFEST) as r:
+                if r.status != 200:
+                    return None
+                return await r.json(content_type=None)
+    except Exception as e:  # noqa: BLE001
+        log.debug("manifest fetch failed: %s", e)
+        return None
 
 
 class PalAPI:
@@ -221,15 +251,8 @@ class PalBot(discord.Client):
 
     @tasks.loop(minutes=15)
     async def watch_mods(self):
-        try:
-            timeout = aiohttp.ClientTimeout(total=15)
-            async with aiohttp.ClientSession(timeout=timeout) as s:
-                async with s.get(MODS_MANIFEST) as r:
-                    if r.status != 200:
-                        return
-                    manifest = await r.json(content_type=None)
-        except Exception as e:  # noqa: BLE001
-            log.debug("mods manifest fetch failed: %s", e)
+        manifest = await fetch_manifest()
+        if manifest is None:
             return
 
         mods = manifest.get("mods", [])
@@ -372,12 +395,8 @@ async def cmd_players(interaction: discord.Interaction):
 @bot.tree.command(name="mods", description="The guild mod set and how to install it")
 async def cmd_mods(interaction: discord.Interaction):
     await interaction.response.defer()
-    try:
-        timeout = aiohttp.ClientTimeout(total=15)
-        async with aiohttp.ClientSession(timeout=timeout) as s:
-            async with s.get(MODS_MANIFEST) as r:
-                manifest = await r.json(content_type=None)
-    except Exception:  # noqa: BLE001
+    manifest = await fetch_manifest()
+    if manifest is None:
         await interaction.followup.send(
             embed=discord.Embed(title="Could not reach the mod list", colour=RED)
         )
@@ -386,15 +405,16 @@ async def cmd_mods(interaction: discord.Interaction):
     mods = manifest.get("mods", [])
     e = discord.Embed(
         title="Guild Mods",
-        description="Download **Palworld Mod Manager.bat** from the mods page, double-click it, tick what you want, press Apply.",
+        description="Run **/getmods** to download the self-installing pack, then tick what you want and Apply.",
         colour=AMBER,
     )
-    lines = ["**Guild Mods** - grab `Palworld Mod Manager.bat`, double-click, tick, Apply."]
+    lines = ["**Guild Mods** - run **/getmods** to download the self-installing pack."]
     for m in mods:
-        e.add_field(name=m.get("name", "?"), value=m.get("description", ""), inline=False)
-        lines.append(f"- **{m.get('name', '?')}** - {m.get('description', '')}")
-    e.add_field(name="Mods page", value="https://github.com/luibots/palworld-mods", inline=False)
-    lines.append("<https://github.com/luibots/palworld-mods>")
+        label = m.get("name", "?")
+        if m.get("version"):
+            label += f" (v{m['version']})"
+        e.add_field(name=label, value=m.get("description", ""), inline=False)
+        lines.append(f"- **{label}** - {m.get('description', '')}")
     await interaction.followup.send(content="\n".join(lines)[:1900], embed=e)
 
 
@@ -434,6 +454,46 @@ async def cmd_backup(interaction: discord.Interaction):
         f"off-site: {'yes' if offsite else 'no'}"
     )
     await interaction.followup.send(content=text, embed=e)
+
+
+@bot.tree.command(name="getmods", description="Get the current guild mod pack (self-installing zip)")
+async def cmd_getmods(interaction: discord.Interaction):
+    await interaction.response.defer()
+    builder = os.path.join(MODS_REPO, "New-GuildBundle.ps1")
+    if not os.path.isfile(builder):
+        await interaction.followup.send(
+            "The mod bundle builder isn't reachable on the host right now - ping the admin."
+        )
+        return
+    out = os.path.join(tempfile.gettempdir(), "GuildMods.zip")
+    try:
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", builder, "-OutPath", out],
+            capture_output=True, text=True, timeout=120,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.error("getmods build error: %s", e)
+        await interaction.followup.send("Couldn't build the mod pack - ping the admin.")
+        return
+    if proc.returncode != 0 or not os.path.isfile(out):
+        log.error("getmods build failed rc=%s: %s", proc.returncode, proc.stderr[:500])
+        await interaction.followup.send("Couldn't build the mod pack - ping the admin.")
+        return
+
+    # Discord attachment limit (25 MB on most servers); our bundles are tiny, but guard anyway.
+    if os.path.getsize(out) > 24 * 1024 * 1024:
+        await interaction.followup.send("The mod pack is too big to attach here - ping the admin.")
+        return
+
+    msg = (
+        "**Palworld Guild Mods**\n"
+        "1. Download **GuildMods.zip** below and unzip it.\n"
+        "2. Double-click **Install Mods.bat**.\n"
+        "3. Tick the mods you want, press **Apply Changes**.\n"
+        "_Close Palworld first. Steam version only._"
+    )
+    await interaction.followup.send(content=msg, file=discord.File(out, filename="GuildMods.zip"))
 
 
 def main():
