@@ -31,3 +31,7 @@ secrets.local.ini
 *.njsproj
 *.sln
 *.sw?
+
+# Downloaded mod tooling (repak, UAssetGUI, mappings) - fetched on demand by tests
+tools/
+
