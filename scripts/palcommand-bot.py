@@ -9,7 +9,7 @@ Slash commands:
 
 Background monitors (post to the alert channel on change):
     * server up/down  - polled every 2 minutes, alerts only on state change
-    * new mod         - polls the public mods.json, announces newly published mods
+    * mod releases    - announces additions, updates, disables, and removals
 
 Secrets are never stored here. Start-PalBot.ps1 decrypts them from DPAPI and
 passes them in as environment variables.
@@ -44,6 +44,7 @@ MODS_MANIFEST = os.environ.get(
     "PALCMD_MODS_MANIFEST",
     "https://raw.githubusercontent.com/luibots/palworld-mods/master/mods.json",
 )
+MODS_REPOSITORY = "https://github.com/luibots/palworld-mods"
 # Local mods repo on the host - used to build the self-contained bundle for /getmods,
 # so distribution stays private (nothing served from a public repo).
 MODS_REPO = os.environ.get(
@@ -189,7 +190,7 @@ class PalBot(discord.Client):
         self.settings = load_settings()
         self.api = PalAPI(self.settings.get("rest_url", ""), ADMIN_PW)
         self.last_up = None          # None = unknown yet
-        self.known_mod_ids = None    # None = not primed yet
+        self.known_mods = None       # None = not primed yet
 
     async def setup_hook(self):
         # NOTE: deliberately no global sync. Registering both globally and per-guild makes
@@ -256,29 +257,102 @@ class PalBot(discord.Client):
             return
 
         mods = manifest.get("mods", [])
-        ids = {m.get("id") for m in mods}
-        if self.known_mod_ids is None:
-            self.known_mod_ids = ids
-            log.info("primed mod list (%d mods)", len(ids))
+        current = {
+            m.get("id"): m
+            for m in mods
+            if m.get("id")
+        }
+        if self.known_mods is None:
+            self.known_mods = current
+            log.info("primed mod list (%d mods)", len(current))
             return
-        new = ids - self.known_mod_ids
-        self.known_mod_ids = ids
-        for m in mods:
-            if m.get("id") in new:
-                e = discord.Embed(
-                    title=f"New mod available: {m.get('name')}",
-                    description=m.get("description", ""),
-                    colour=AMBER,
-                    timestamp=datetime.now(timezone.utc),
-                )
-                e.add_field(
-                    name="How to get it",
-                    value="Open your **Palworld Mod Manager**, tick the mod, press **Apply Changes**.",
-                    inline=False,
-                )
-                if m.get("notes"):
-                    e.add_field(name="Note", value=m["notes"], inline=False)
-                await self.alert(e)
+
+        previous = self.known_mods
+        self.known_mods = current
+
+        for mod_id, m in current.items():
+            old = previous.get(mod_id)
+            fingerprint = (
+                m.get("version"),
+                m.get("sha256"),
+                m.get("gameVersion"),
+                bool(m.get("enabled", True)),
+            )
+            old_fingerprint = None if old is None else (
+                old.get("version"),
+                old.get("sha256"),
+                old.get("gameVersion"),
+                bool(old.get("enabled", True)),
+            )
+            if old is not None and fingerprint == old_fingerprint:
+                continue
+
+            version = m.get("version", "?")
+            enabled = bool(m.get("enabled", True))
+            scope = "Server + client" if m.get("serverSide") else "Client only"
+            release_url = f"{MODS_REPOSITORY}/releases/tag/{mod_id}-v{version}"
+
+            if old is None:
+                title = f"New guild mod: {m.get('name', mod_id)} v{version}"
+                change = "A new mod is ready."
+                colour = AMBER
+            elif not enabled:
+                title = f"Mod disabled: {m.get('name', mod_id)}"
+                change = "Untick this mod in the manager and apply changes."
+                colour = RED
+            else:
+                old_version = old.get("version", "?")
+                title = f"Mod updated: {m.get('name', mod_id)} v{version}"
+                change = f"Updated from v{old_version} to v{version}."
+                colour = GREEN
+
+            e = discord.Embed(
+                title=title,
+                description=m.get("description", ""),
+                colour=colour,
+                timestamp=datetime.now(timezone.utc),
+                url=release_url,
+            )
+            e.add_field(name="Compatibility", value=m.get("gameVersion", "Not listed"))
+            e.add_field(name="Install scope", value=scope)
+            e.add_field(name="Deployment", value=change, inline=False)
+            e.add_field(
+                name="Install / update",
+                value="Run **/getmods**, extract the ZIP, then run **Install Mods.bat**.",
+                inline=False,
+            )
+            if m.get("notes"):
+                e.add_field(name="Release note", value=m["notes"][:1024], inline=False)
+
+            text = (
+                f"**{title}**\n"
+                f"{m.get('description', '')}\n"
+                f"Compatibility: `{m.get('gameVersion', 'Not listed')}` | Scope: **{scope}**\n"
+                f"{change}\n"
+                f"Run **/getmods** for the current installer.\n"
+                f"{release_url}"
+            )
+            await self.alert(e, text)
+
+        for mod_id, old in previous.items():
+            if mod_id in current:
+                continue
+            title = f"Mod removed: {old.get('name', mod_id)}"
+            e = discord.Embed(
+                title=title,
+                description="This mod is no longer in the supported guild set.",
+                colour=RED,
+                timestamp=datetime.now(timezone.utc),
+            )
+            e.add_field(
+                name="Action required",
+                value="Run **/getmods**, then untick the removed mod and apply changes.",
+                inline=False,
+            )
+            await self.alert(
+                e,
+                f"**{title}**\nRun **/getmods**, untick it, and apply changes.",
+            )
 
     @watch_mods.before_loop
     async def _before_watch_mods(self):
