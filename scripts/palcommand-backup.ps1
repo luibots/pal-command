@@ -283,7 +283,7 @@ try {
     $mx = Invoke-RestMethod -Uri ("{0}/v1/api/metrics" -f $cfg.rest_url) -Headers @{ Authorization = "Basic $b64" } -TimeoutSec 10
     $day = " day-$($mx.days)"
   } catch {}
-  & git -c user.email='palcommand@local' -c user.name='PAL COMMAND (auto)' commit -q -m "auto backup ${ts}${day} - $($players.Count) players" 2>$null | Out-Null
+  & git -c user.email='palcommand@local' -c user.name='PAL COMMAND (auto)' commit -q -m "auto backup ${ts}${day} - $($players.Count) player profiles" 2>$null | Out-Null
   $committed = $LASTEXITCODE -eq 0
   $pushed = $false
   if ($committed -and $cfg.repo_remote) {
@@ -301,7 +301,7 @@ try {
       @{ name = 'When';      value = (Get-PacificTime); inline = $true },
       @{ name = 'World';     value = ("{0}{1}" -f $world, $day);            inline = $true },
       @{ name = 'Size';      value = "$sizeMb MB";                          inline = $true },
-      @{ name = 'Players';   value = "$($players.Count) saves";             inline = $true },
+      @{ name = 'Player profiles'; value = "$($players.Count) saved";       inline = $true },
       @{ name = 'Off-site';  value = $(if ($pushed) { 'Yes' } else { 'No' }); inline = $true }
     )
   Log '=== backup done ==='
