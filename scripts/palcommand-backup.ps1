@@ -170,8 +170,20 @@ try {
   function Invoke-Sftp([string]$batch) {
     $bf = Join-Path $autoDir ('batch-' + [guid]::NewGuid().ToString('N') + '.txt')
     [IO.File]::WriteAllText($bf, $batch, (New-Object System.Text.ASCIIEncoding))
-    try { & $sftpExe @sftpOpts '-b' $bf $sftpTarget 2>$null }
-    finally { Remove-Item $bf -Force -ErrorAction SilentlyContinue }
+    $priorPreference = $ErrorActionPreference
+    try {
+      # OpenSSH writes harmless first-connect and progress messages to stderr.
+      # Under Stop, PowerShell turns any native stderr line into NativeCommandError
+      # before we can inspect the real process exit code.
+      $ErrorActionPreference = 'Continue'
+      $output = & $sftpExe @sftpOpts '-b' $bf $sftpTarget 2>$null
+      $exitCode = $LASTEXITCODE
+    } finally {
+      $ErrorActionPreference = $priorPreference
+      Remove-Item $bf -Force -ErrorAction SilentlyContinue
+    }
+    if ($exitCode -ne 0) { throw "SFTP command failed with exit code $exitCode." }
+    return $output
   }
 
   $stage = Join-Path $env:TEMP ("palcmd-stage-" + $ts)
