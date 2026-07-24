@@ -329,19 +329,41 @@ try {
   $gi = Join-Path $repo '.gitignore'
   if (-not (Test-Path $gi)) { "*.tmp`nsecrets.local.ini`n*.local.ini`nbackup/`n" | Out-File $gi -Encoding ascii }
   Push-Location $repo
-  & git add -A 2>$null | Out-Null
+  $priorPreference = $ErrorActionPreference
+  try {
+    # Git can emit harmless line-ending warnings on stderr. Judge native commands by
+    # their exit code so PowerShell does not turn those warnings into backup failures.
+    $ErrorActionPreference = 'Continue'
+    & git add -A 2>$null | Out-Null
+    $addExit = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $priorPreference
+  }
+  if ($addExit -ne 0) { throw "git add failed with exit code $addExit." }
   $day = ''
   try {
     $b64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("admin:$adminPw"))
     $mx = Invoke-RestMethod -Uri ("{0}/v1/api/metrics" -f $cfg.rest_url) -Headers @{ Authorization = "Basic $b64" } -TimeoutSec 10
     $day = " day-$($mx.days)"
   } catch {}
-  & git -c user.email='palcommand@local' -c user.name='PAL COMMAND (auto)' commit -q -m "auto backup ${ts}${day} - $($players.Count) player profiles" 2>$null | Out-Null
-  $committed = $LASTEXITCODE -eq 0
+  try {
+    $ErrorActionPreference = 'Continue'
+    & git -c user.email='palcommand@local' -c user.name='PAL COMMAND (auto)' commit -q -m "auto backup ${ts}${day} - $($players.Count) player profiles" 2>$null | Out-Null
+    $commitExit = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $priorPreference
+  }
+  $committed = $commitExit -eq 0
   $pushed = $false
   if ($committed -and $cfg.repo_remote) {
-    & git push -q origin $cfg.git_branch 2>$null | Out-Null
-    $pushed = $LASTEXITCODE -eq 0
+    try {
+      $ErrorActionPreference = 'Continue'
+      & git push -q origin $cfg.git_branch 2>$null | Out-Null
+      $pushExit = $LASTEXITCODE
+    } finally {
+      $ErrorActionPreference = $priorPreference
+    }
+    $pushed = $pushExit -eq 0
   }
   Pop-Location
   Log ("git: committed={0} pushed={1}" -f $committed, $pushed)

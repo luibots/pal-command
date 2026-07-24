@@ -6,11 +6,11 @@ interface Props { settings: AppSettings; secrets: SecretsPresent | null; }
 
 // A curated set of the most-tuned keys so the UI doesn't dump 100+ raw rows on the user.
 // Everything else is available in the "advanced" table below.
-const FEATURED: { key: string; label: string; hint?: string; kind: "text" | "bool" | "num" }[] = [
+const FEATURED: { key: string; label: string; hint?: string; kind: "text" | "bool" | "num" | "secret" }[] = [
   { key: "ServerName", label: "Server Name", kind: "text" },
   { key: "ServerDescription", label: "Description", kind: "text" },
-  { key: "ServerPassword", label: "Join Password", kind: "text", hint: "empty = no password" },
-  { key: "AdminPassword", label: "Admin Password", kind: "text", hint: "Also used for RCON + REST auth" },
+  { key: "ServerPassword", label: "Join Password", kind: "secret", hint: "empty = no password" },
+  { key: "AdminPassword", label: "Admin Password", kind: "secret", hint: "Also used for RCON + REST auth" },
   { key: "ServerPlayerMaxNum", label: "Max Players", kind: "num" },
   { key: "PublicPort", label: "Public Port", kind: "num" },
   { key: "RESTAPIEnabled", label: "REST API On", kind: "bool" },
@@ -19,6 +19,7 @@ const FEATURED: { key: string; label: string; hint?: string; kind: "text" | "boo
   { key: "RCONPort", label: "RCON Port", kind: "num" },
   { key: "bIsPvP", label: "PvP", kind: "bool" },
   { key: "DeathPenalty", label: "Death Penalty", kind: "text", hint: "None / Item / ItemAndEquipment / All" },
+  { key: "PalEggDefaultHatchingTime", label: "Egg Hatch Hours", kind: "num", hint: "0 = instant hatching after restart" },
   { key: "ExpRate", label: "XP Rate", kind: "num" },
   { key: "PalCaptureRate", label: "Pal Capture Rate", kind: "num" },
   { key: "DayTimeSpeedRate", label: "Day Speed", kind: "num" },
@@ -45,7 +46,7 @@ export function Config({ settings, secrets }: Props) {
   useEffect(() => {
     if (secrets?.ftp && settings.sftp_host) load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [secrets?.ftp, settings.sftp_host]);
+  }, [secrets?.ftp, settings.sftp_host, settings.config_dir]);
 
   const original = useMemo(() => {
     const m = new Map<string, string>();
@@ -56,6 +57,13 @@ export function Config({ settings, secrets }: Props) {
   const changes = useMemo(() => {
     return Object.entries(drafts).filter(([k, v]) => original.get(k) !== v);
   }, [drafts, original]);
+
+  const featuredCount = useMemo(
+    () => FEATURED.filter(({ key }) => original.has(key)).length,
+    [original],
+  );
+
+  const isSecret = (key: string) => /password|secret|token/i.test(key);
 
   const setDraft = (k: string, v: string) => setDrafts(d => ({ ...d, [k]: v }));
 
@@ -85,9 +93,18 @@ export function Config({ settings, secrets }: Props) {
       <div className="section-head">
         <div className="section-title">SERVER <span className="amber">CONFIG</span></div>
         <div className="section-meta">
-          {view?.source ?? (loading ? "LOADING…" : "—")}
+          {view ? `${view.pairs.length} SETTINGS` : (loading ? "LOADING..." : "NOT LOADED")}
         </div>
       </div>
+
+      {loading && !view && (
+        <div className="panel" style={{ marginBottom: 14 }}>
+          <div className="empty">
+            <div className="empty-title">Loading live server config...</div>
+            <div className="empty-sub">Connecting over SFTP and validating PalWorldSettings.ini.</div>
+          </div>
+        </div>
+      )}
 
       <div className="notice" style={{ marginBottom: 14 }}>
         Palworld only reads settings at boot — <strong>stop the server before saving</strong>, then
@@ -98,6 +115,11 @@ export function Config({ settings, secrets }: Props) {
 
       {error && <div className="notice notice--warn">{error}</div>}
       {saveMsg && <div className="notice notice--good">{saveMsg}</div>}
+      {!loading && !view && !error && (
+        <div className="notice notice--warn">
+          The live config has not loaded. Use Reload to try the SFTP connection again.
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
         <button className="btn" onClick={load} disabled={loading}>
@@ -125,6 +147,12 @@ export function Config({ settings, secrets }: Props) {
 
       {view && (
         <>
+          {featuredCount === 0 && (
+            <div className="notice notice--warn" style={{ marginBottom: 12 }}>
+              The file loaded, but none of the expected Palworld keys were found. Turn on
+              Show all to inspect the parsed options.
+            </div>
+          )}
           <div className="panel" style={{ marginBottom: 12 }}>
             <div className="panel-head"><span className="panel-title">Featured Settings</span></div>
             <div className="panel-body" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px 16px" }}>
@@ -145,6 +173,7 @@ export function Config({ settings, secrets }: Props) {
                     ) : (
                       <input
                         className="input"
+                        type={f.kind === "secret" ? "password" : "text"}
                         value={cur}
                         onChange={e => setDraft(f.key, e.target.value)}
                         inputMode={f.kind === "num" ? "decimal" : "text"}
@@ -177,6 +206,7 @@ export function Config({ settings, secrets }: Props) {
                           <td style={{ width: "60%" }}>
                             <input
                               className="input"
+                              type={isSecret(k) ? "password" : "text"}
                               style={{ padding: "3px 8px", fontSize: 11 }}
                               value={cur}
                               onChange={e => setDraft(k, e.target.value)}
