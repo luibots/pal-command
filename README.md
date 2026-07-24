@@ -29,6 +29,22 @@ machine so it can reach all three: **your files, your game, your server.**
 | **AI copilot** | Chat that reads live state + config and *drafts* changes for your approval. DeepSeek + local Ollama, provider-pluggable. | 🔜 Planned |
 | **Multi-server + installer** | Manage servers as profiles; one-click mod installer to share with your guild | 🔜 Planned |
 
+### Open PAL COMMAND with Palworld
+
+Install the per-user auto-launch task once:
+
+```powershell
+.\scripts\Install-PalworldAutoLaunch.ps1
+```
+
+A hidden lightweight watcher starts at Windows sign-in. It opens PAL COMMAND once when
+Palworld starts, never launches a duplicate, and does not reopen the dashboard if you
+close it during the same game session. Remove the behavior with:
+
+```powershell
+.\scripts\Install-PalworldAutoLaunch.ps1 -Remove
+```
+
 ## Architecture
 
 ```
