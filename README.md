@@ -21,7 +21,7 @@ machine so it can reach all three: **your files, your game, your server.**
 
 | Pillar | What it does | Status |
 |---|---|---|
-| **Dashboard** | Live server telemetry — players with copyable in-game map coordinates, FPS, uptime, quick ops (save / broadcast / restart), event feed | ✅ Built |
+| **Dashboard** | Live telemetry plus guarded restart: require zero players, verify and push a backup, recheck players, restart, and confirm recovery | ✅ Built |
 | **Live control** | REST API (preferred) + hand-rolled Source RCON fallback — announce, kick/ban, save, shutdown | ✅ Built |
 | **Backups** | Force-save → SFTP pull → integrity-check (`PlZ` magic) → compress → retention → git commit/push. Secret-redacted, restore built in. | ✅ Built |
 | **Config editor** | Round-trip-safe `PalWorldSettings.ini` editor — preserves unknown keys, validates before write, pre-write backup | ✅ Built |

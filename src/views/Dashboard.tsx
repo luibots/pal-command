@@ -148,6 +148,28 @@ export function Dashboard({ info, metrics, liveOk, settings, secrets }: Props) {
     } finally { setBusy(false); }
   };
 
+  const runSafeRestart = async () => {
+    if (!confirm(
+      "Run the guarded restart?\n\nPAL COMMAND will refuse if players are online, " +
+      "create and verify an off-site backup, check players again, then restart."
+    )) return;
+    setBusy(true);
+    pushEvent("op", "safe restart: checking players...");
+    try {
+      const r = await api.safeRestart();
+      pushEvent(
+        "op",
+        `backup ${r.backup.timestamp} verified${r.backup.pushed ? " + pushed" : ""}; ` +
+        `server recovered in ${r.recovery_seconds}s`
+      );
+      const h = await api.backupHistory();
+      setSnapshotCount(h.length);
+      setLastBackup(h[0]?.modified ?? null);
+    } catch (e) {
+      pushEvent("op", `safe restart blocked - ${e}`);
+    } finally { setBusy(false); }
+  };
+
   const copyCoordinates = async (playerKey: string, x: number, y: number) => {
     const [mapX, mapY] = worldToMap(x, y);
     await navigator.clipboard.writeText(`${Math.round(mapX)}, ${Math.round(mapY)}`);
@@ -282,10 +304,9 @@ export function Dashboard({ info, metrics, liveOk, settings, secrets }: Props) {
                 </span>
               </button>
               <button className="qbtn" disabled={!liveReady || busy}
-                onClick={() => action("shutdown in 60s", () =>
-                  api.liveShutdown(60, "Server restart in 60 seconds"))}>
-                <span className="qbtn-label">⏱ Restart 60s</span>
-                <span className="qbtn-hint">Graceful shutdown warning</span>
+                onClick={runSafeRestart}>
+                <span className="qbtn-label">Safe Restart</span>
+                <span className="qbtn-hint">0 players - backup - verify - restart</span>
               </button>
               <button className="qbtn qbtn--danger" disabled={!liveReady || busy}
                 onClick={() => {

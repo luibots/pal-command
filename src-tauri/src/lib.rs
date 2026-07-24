@@ -31,6 +31,7 @@ pub fn run() {
             live_kick,
             live_ban,
             backup_now,
+            safe_restart,
             backup_history,
             restore_backup,
             backup_offsite_status,

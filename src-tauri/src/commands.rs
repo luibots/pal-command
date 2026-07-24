@@ -350,6 +350,140 @@ pub async fn backup_now(app: tauri::AppHandle) -> Result<BackupReport, String> {
     run_backup(s, sftp_pw, admin_pw).await
 }
 
+#[derive(Serialize)]
+pub struct SafeRestartReport {
+    pub backup: BackupReport,
+    pub player_checks: u8,
+    pub waittime: u32,
+    pub recovery_seconds: u64,
+}
+
+fn require_empty_server(player_count: usize, after_backup: bool) -> Result<(), String> {
+    if player_count == 0 {
+        return Ok(());
+    }
+    if after_backup {
+        Err(format!(
+            "Backup completed, but restart was blocked because {player_count} player(s) joined."
+        ))
+    } else {
+        Err(format!(
+            "Restart blocked: {player_count} player(s) are online. Wait until the server is empty."
+        ))
+    }
+}
+
+fn require_verified_snapshot(backup: &BackupReport) -> Result<(), String> {
+    if backup.worlds.is_empty() || backup.archives.is_empty() {
+        Err("Restart blocked: the backup completed without a verified world snapshot.".into())
+    } else if !backup.pushed {
+        Err("Restart blocked: the verified backup was not pushed off-site.".into())
+    } else {
+        Ok(())
+    }
+}
+
+#[tauri::command]
+pub async fn safe_restart(app: tauri::AppHandle) -> Result<SafeRestartReport, String> {
+    let before = live_players(app.clone()).await?;
+    require_empty_server(before.len(), false)?;
+
+    let mut settings = load_settings(&cfg_dir(&app)?);
+    settings.stop_before_backup = false;
+    let sftp_pw = get_secret(KEY_FTP_PASSWORD)
+        .ok_or("No SFTP password saved - Settings > File Access.")?;
+    let admin_pw = get_secret(KEY_ADMIN_PASSWORD);
+    let backup = run_backup(settings, sftp_pw, admin_pw).await?;
+    require_verified_snapshot(&backup)?;
+
+    let after = live_players(app.clone()).await?;
+    require_empty_server(after.len(), true)?;
+
+    let waittime = 10;
+    live_shutdown(
+        app.clone(),
+        waittime,
+        "Verified backup complete - server restarting in 10 seconds".into(),
+    )
+    .await?;
+
+    let started = std::time::Instant::now();
+    let mut saw_shutdown = false;
+    let recovery_seconds = loop {
+        if started.elapsed().as_secs() >= 180 {
+            return Err(format!(
+                "Backup is safe and shutdown was accepted, but server recovery was not confirmed \
+                 within 180 seconds (shutdown observed: {saw_shutdown})."
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        match live_info(app.clone()).await {
+            Err(_) => saw_shutdown = true,
+            Ok(_) if saw_shutdown => break started.elapsed().as_secs(),
+            Ok(_) => {}
+        }
+    };
+
+    Ok(SafeRestartReport {
+        backup,
+        player_checks: 2,
+        waittime,
+        recovery_seconds,
+    })
+}
+
+#[cfg(test)]
+mod safe_restart_tests {
+    use super::{require_empty_server, require_verified_snapshot};
+    use crate::backup::{ArchiveInfo, BackupReport};
+
+    fn report(worlds: Vec<String>, archives: Vec<ArchiveInfo>, pushed: bool) -> BackupReport {
+        BackupReport {
+            timestamp: "test".into(),
+            worlds,
+            players: 0,
+            configs: vec![],
+            archives,
+            warnings: vec![],
+            committed: true,
+            pushed,
+            message: "test".into(),
+        }
+    }
+
+    #[test]
+    fn restart_requires_empty_server_before_and_after_backup() {
+        assert!(require_empty_server(0, false).is_ok());
+        assert!(require_empty_server(1, false).unwrap_err().contains("online"));
+        assert!(require_empty_server(1, true).unwrap_err().contains("joined"));
+    }
+
+    #[test]
+    fn restart_requires_a_verified_world_archive() {
+        assert!(require_verified_snapshot(&report(vec![], vec![], true)).is_err());
+        assert!(require_verified_snapshot(&report(vec!["world".into()], vec![], true)).is_err());
+        assert!(require_verified_snapshot(&report(
+            vec!["world".into()],
+            vec![ArchiveInfo {
+                name: "snapshot.tar.gz".into(),
+                bytes: 1,
+            }],
+            false,
+        ))
+        .unwrap_err()
+        .contains("off-site"));
+        assert!(require_verified_snapshot(&report(
+            vec!["world".into()],
+            vec![ArchiveInfo {
+                name: "snapshot.tar.gz".into(),
+                bytes: 1,
+            }],
+            true,
+        ))
+        .is_ok());
+    }
+}
+
 #[tauri::command]
 pub async fn restore_backup(app: tauri::AppHandle, archive_name: String) -> Result<RestoreReport, String> {
     let s = load_settings(&cfg_dir(&app)?);

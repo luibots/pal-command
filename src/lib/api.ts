@@ -72,6 +72,13 @@ export interface BackupReport {
 
 export interface BackupHistoryItem { name: string; bytes: number; modified: string; }
 
+export interface SafeRestartReport {
+  backup: BackupReport;
+  player_checks: number;
+  waittime: number;
+  recovery_seconds: number;
+}
+
 export interface RestoreReport {
   world_folder: string;
   files_restored: number;
@@ -100,8 +107,6 @@ export const api = {
   livePlayers: () => invoke<LivePlayer[]>("live_players"),
   liveAnnounce: (message: string) => invoke<void>("live_announce", { message }),
   liveSave: () => invoke<void>("live_save"),
-  liveShutdown: (waittime: number, message: string) =>
-    invoke<void>("live_shutdown", { waittime, message }),
   liveStop: () => invoke<void>("live_stop"),
   liveKick: (userid: string, message: string) =>
     invoke<void>("live_kick", { userid, message }),
@@ -109,6 +114,7 @@ export const api = {
     invoke<void>("live_ban", { userid, message }),
 
   backupNow: () => invoke<BackupReport>("backup_now"),
+  safeRestart: () => invoke<SafeRestartReport>("safe_restart"),
   backupHistory: () => invoke<BackupHistoryItem[]>("backup_history"),
   restoreBackup: (archiveName: string) =>
     invoke<RestoreReport>("restore_backup", { archiveName }),
