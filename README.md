@@ -29,6 +29,11 @@ machine so it can reach all three: **your files, your game, your server.**
 | **AI copilot** | Chat that reads live state + config and *drafts* changes for your approval. DeepSeek + local Ollama, provider-pluggable. | 🔜 Planned |
 | **Multi-server + installer** | Manage servers as profiles; one-click mod installer to share with your guild | 🔜 Planned |
 
+Config saves made in PAL COMMAND notify the Discord alert channel with changed setting
+names only. Values are never included. Scheduled backups also compare the redacted
+configuration and announce changes made outside the dashboard. `/status` includes the
+most recently delivered config-change summary.
+
 ### Open PAL COMMAND with Palworld
 
 Install the per-user auto-launch task once:

@@ -20,6 +20,7 @@ param(
   [string]$DiscordToken,
   [string]$DiscordChannelId,
   [switch]$TestDiscord,
+  [switch]$SelfTest,
   [switch]$Quiet
 )
 
@@ -36,6 +37,39 @@ function Log([string]$m) {
   $line = ('[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m)
   Add-Content -Path $logPath -Value $line -Encoding utf8
   if (-not $Quiet) { Write-Host $line }
+}
+
+function Get-ConfigMap([string]$text) {
+  $map = @{}
+  if (-not $text) { return $map }
+  $pattern = '(?:\(|,)(?<key>[A-Za-z][A-Za-z0-9_]*)=(?<value>"[^"]*"|[^,\r\n\)]*)'
+  foreach ($match in [regex]::Matches($text, $pattern)) {
+    $map[$match.Groups['key'].Value] = $match.Groups['value'].Value
+  }
+  return $map
+}
+
+function Get-ChangedConfigKeys([string]$before, [string]$after) {
+  if (-not $before -or -not $after) { return @() }
+  $old = Get-ConfigMap $before
+  $new = Get-ConfigMap $after
+  $keys = @($old.Keys + $new.Keys | Sort-Object -Unique)
+  @($keys | Where-Object {
+    -not $old.ContainsKey($_) -or
+    -not $new.ContainsKey($_) -or
+    $old[$_] -ne $new[$_]
+  })
+}
+
+if ($SelfTest) {
+  $before = 'OptionSettings=(DeathPenalty=All,ExpRate=1.000000,AdminPassword="<REDACTED>")'
+  $after = 'OptionSettings=(DeathPenalty=None,ExpRate=1.000000,AdminPassword="<REDACTED>")'
+  $changed = @(Get-ChangedConfigKeys $before $after)
+  if ($changed.Count -ne 1 -or $changed[0] -ne 'DeathPenalty') {
+    throw "Config change detector self-test failed: $($changed -join ', ')"
+  }
+  Write-Host 'Config change detector self-test: PASS'
+  return
 }
 
 # One-time secret setup (DPAPI)
@@ -240,6 +274,11 @@ try {
 
   # 4. Redact secrets from configs
   $configOut = Join-Path $repo 'config'; New-Item -ItemType Directory -Force $configOut | Out-Null
+  $previousPalConfigPath = Join-Path $configOut 'PalWorldSettings.ini'
+  $previousPalConfig = if (Test-Path $previousPalConfigPath) {
+    Get-Content $previousPalConfigPath -Raw
+  } else { '' }
+  $currentPalConfig = ''
   $sidecar = @('# PAL COMMAND real secrets - git-ignored, needed for restore','[PalWorldSettings.ini]')
   foreach ($ini in @('PalWorldSettings.ini','GameUserSettings.ini')) {
     $src = Join-Path $stage $ini
@@ -253,10 +292,24 @@ try {
           $text = $text -replace ($key + '="[^"]*"'), ($key + '="<REDACTED>"')
         }
       }
+      $currentPalConfig = $text
     }
     Set-Content -Path (Join-Path $configOut $ini) -Value $text -Encoding utf8
   }
   Set-Content -Path (Join-Path $configOut 'secrets.local.ini') -Value ($sidecar -join "`n") -Encoding utf8
+
+  $changedConfigKeys = @(Get-ChangedConfigKeys $previousPalConfig $currentPalConfig)
+  if ($changedConfigKeys.Count) {
+    $keyList = ($changedConfigKeys | Sort-Object) -join ', '
+    Log "config change detected: $keyList"
+    $null = Send-DiscordAlert 'Server config changed' `
+      'A change outside the PAL COMMAND dashboard was detected during backup. Values are intentionally hidden.' `
+      16098852 `
+      @(
+        @{ name = 'Changed settings'; value = $keyList; inline = $false },
+        @{ name = 'Next step'; value = 'Use PAL COMMAND Safe Restart when the server is empty.'; inline = $false }
+      )
+  }
 
   # 5. tar.gz snapshot (matches the app's saves/ format)
   $savesOut = Join-Path $repo 'saves'; New-Item -ItemType Directory -Force $savesOut | Out-Null

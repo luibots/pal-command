@@ -8,6 +8,7 @@ use crate::rcon_ctl::{self, RconConfig, RconPlayer};
 use crate::rest::RestClient;
 use crate::sftp::{self, SftpConfig};
 use serde::Serialize;
+use std::io::Write;
 use std::path::PathBuf;
 use tauri::Manager;
 
@@ -434,7 +435,7 @@ pub async fn safe_restart(app: tauri::AppHandle) -> Result<SafeRestartReport, St
 
 #[cfg(test)]
 mod safe_restart_tests {
-    use super::{require_empty_server, require_verified_snapshot};
+    use super::{config_change_event, require_empty_server, require_verified_snapshot};
     use crate::backup::{ArchiveInfo, BackupReport};
 
     fn report(worlds: Vec<String>, archives: Vec<ArchiveInfo>, pushed: bool) -> BackupReport {
@@ -481,6 +482,19 @@ mod safe_restart_tests {
             true,
         ))
         .is_ok());
+    }
+
+    #[test]
+    fn config_change_events_never_include_values() {
+        let updates = vec![
+            ("DeathPenalty".into(), "None".into()),
+            ("AdminPassword".into(), "do-not-leak-this".into()),
+        ];
+        let json = serde_json::to_string(&config_change_event(&updates)).unwrap();
+        assert!(json.contains("AdminPassword"));
+        assert!(json.contains("DeathPenalty"));
+        assert!(!json.contains("do-not-leak-this"));
+        assert!(!json.contains("\"None\""));
     }
 }
 
@@ -537,6 +551,39 @@ pub fn backup_history(app: tauri::AppHandle) -> Vec<BackupHistoryItem> {
 pub struct PalConfigView {
     pub pairs: Vec<(String, String)>,
     pub source: String,
+}
+
+#[derive(Serialize)]
+struct ConfigChangeEvent {
+    event_type: &'static str,
+    source: &'static str,
+    changed_keys: Vec<String>,
+    created_at: String,
+}
+
+fn config_change_event(updates: &[(String, String)]) -> ConfigChangeEvent {
+    let mut changed_keys: Vec<String> = updates.iter().map(|(key, _)| key.clone()).collect();
+    changed_keys.sort();
+    changed_keys.dedup();
+    ConfigChangeEvent {
+        event_type: "config_changed",
+        source: "PAL COMMAND dashboard",
+        changed_keys,
+        created_at: chrono::Utc::now().to_rfc3339(),
+    }
+}
+
+fn queue_config_change(app: &tauri::AppHandle, updates: &[(String, String)]) -> Result<(), String> {
+    let auto_dir = cfg_dir(app)?.join("auto");
+    std::fs::create_dir_all(&auto_dir).map_err(|e| e.to_string())?;
+    let event = config_change_event(updates);
+    let line = serde_json::to_string(&event).map_err(|e| e.to_string())?;
+    let mut queue = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(auto_dir.join("discord-events.jsonl"))
+        .map_err(|e| e.to_string())?;
+    writeln!(queue, "{line}").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -606,12 +653,23 @@ pub async fn config_save(
             palconfig::apply_updates(&mut parsed, &updates);
             let out = palconfig::serialize(&parsed)?;
             sftp::upload(&sess, &path, out.as_bytes()).await?;
-            return Ok(format!(
+            if !s.repo_local_path.is_empty() {
+                let config_dir = PathBuf::from(&s.repo_local_path).join("config");
+                let _ = std::fs::create_dir_all(&config_dir);
+                let (redacted, _) = crate::backup::redact_config(&out);
+                let _ = std::fs::write(config_dir.join("PalWorldSettings.ini"), redacted);
+            }
+            let notification = queue_config_change(&app, &updates);
+            let mut message = format!(
                 "Saved {} change{} to {} (previous file backed up as PalWorldSettings.ini.bak-{}).",
                 updates.len(),
                 if updates.len() == 1 { "" } else { "s" },
                 path, ts
-            ));
+            );
+            if let Err(error) = notification {
+                message.push_str(&format!(" Discord notification warning: {error}"));
+            }
+            return Ok(message);
         }
     }
     Err("Couldn't find PalWorldSettings.ini to update.".into())

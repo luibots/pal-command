@@ -10,6 +10,7 @@ Slash commands:
 Background monitors (post to the alert channel on change):
     * server up/down  - polled every 2 minutes, alerts only on state change
     * mod releases    - announces additions, updates, disables, and removals
+    * config changes  - changed key names only; values and secrets are never posted
 
 Secrets are never stored here. Start-PalBot.ps1 decrypts them from DPAPI and
 passes them in as environment variables.
@@ -23,6 +24,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import uuid
 from datetime import datetime, timezone
 
 import aiohttp
@@ -59,6 +61,9 @@ GREY = 0x6B7280
 
 CFG_DIR = pathlib.Path(os.environ["APPDATA"]) / "com.luibots.palcommand"
 SETTINGS = CFG_DIR / "settings.json"
+AUTO_DIR = CFG_DIR / "auto"
+CONFIG_EVENT_QUEUE = AUTO_DIR / "discord-events.jsonl"
+LAST_CONFIG_CHANGE = AUTO_DIR / "last-config-change.json"
 
 
 def load_settings() -> dict:
@@ -68,6 +73,39 @@ def load_settings() -> dict:
     except Exception as e:  # noqa: BLE001
         log.error("could not read settings.json: %s", e)
         return {}
+
+
+def load_last_config_change() -> dict | None:
+    try:
+        return json.loads(LAST_CONFIG_CHANGE.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def claim_config_events() -> tuple[list[dict], list[pathlib.Path]]:
+    AUTO_DIR.mkdir(parents=True, exist_ok=True)
+    claimed = list(AUTO_DIR.glob("discord-events.*.processing"))
+    if CONFIG_EVENT_QUEUE.exists():
+        processing = AUTO_DIR / f"discord-events.{os.getpid()}.{uuid.uuid4().hex}.processing"
+        try:
+            os.replace(CONFIG_EVENT_QUEUE, processing)
+            claimed.append(processing)
+        except OSError:
+            pass
+
+    events = []
+    for path in claimed:
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    event = json.loads(line)
+                    if event.get("event_type") == "config_changed":
+                        events.append(event)
+                except json.JSONDecodeError:
+                    log.warning("ignored malformed Discord event in %s", path.name)
+        except OSError as e:
+            log.warning("could not read Discord event queue %s: %s", path.name, e)
+    return events, claimed
 
 
 try:
@@ -198,24 +236,27 @@ class PalBot(discord.Client):
         # is also instant, whereas global commands take up to an hour to propagate.
         self.watch_server.start()
         self.watch_mods.start()
+        self.watch_config_events.start()
 
     async def alert(self, embed: discord.Embed, text: str = ""):
         if not CHANNEL_ID:
-            return
+            return False
         ch = self.get_channel(CHANNEL_ID)
         if ch is None:
             try:
                 ch = await self.fetch_channel(CHANNEL_ID)
             except Exception as e:  # noqa: BLE001
                 log.error("alert channel %s unreachable: %s", CHANNEL_ID, e)
-                return
+                return False
         # Always send a plain-text mirror: clients with embeds turned off see nothing otherwise.
         if not text:
             text = f"**{embed.title}**" + (f" - {embed.description}" if embed.description else "")
         try:
             await ch.send(content=text[:1900], embed=embed)
+            return True
         except Exception as e:  # noqa: BLE001
             log.error("could not post alert: %s", e)
+            return False
 
     # ---------------------------------------------------------- monitors
 
@@ -248,6 +289,55 @@ class PalBot(discord.Client):
 
     @watch_server.before_loop
     async def _before_watch_server(self):
+        await self.wait_until_ready()
+
+    @tasks.loop(seconds=10)
+    async def watch_config_events(self):
+        events, claimed = claim_config_events()
+        retry = []
+        try:
+            for event in events:
+                keys = sorted({str(key) for key in event.get("changed_keys", []) if key})
+                if not keys:
+                    continue
+                source = str(event.get("source") or "PAL COMMAND")
+                key_text = ", ".join(f"`{key}`" for key in keys)
+                e = discord.Embed(
+                    title="Server config changed",
+                    description=f"{source} changed {len(keys)} setting(s).",
+                    colour=AMBER,
+                    timestamp=datetime.now(timezone.utc),
+                )
+                e.add_field(name="Changed settings", value=key_text[:1024], inline=False)
+                e.add_field(
+                    name="Next step",
+                    value="Restart through PAL COMMAND Safe Restart when the server is empty.",
+                    inline=False,
+                )
+                text = (
+                    f"**Server config changed** - {source} changed: "
+                    f"{', '.join(keys)}. Values are intentionally hidden."
+                )
+                if await self.alert(e, text):
+                    LAST_CONFIG_CHANGE.write_text(
+                        json.dumps(event, indent=2),
+                        encoding="utf-8",
+                    )
+                else:
+                    retry.append(event)
+        finally:
+            for path in claimed:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            if retry:
+                with CONFIG_EVENT_QUEUE.open("a", encoding="utf-8") as queue:
+                    for event in retry:
+                        queue.write(json.dumps(event, separators=(",", ":")) + "\n")
+
+    @watch_config_events.before_loop
+    async def _before_watch_config_events(self):
         await self.wait_until_ready()
 
     @tasks.loop(minutes=15)
@@ -426,6 +516,18 @@ async def cmd_status(interaction: discord.Interaction):
         ]
         if fps is not None:
             bits.append(f"{fps} FPS")
+    last_change = load_last_config_change()
+    if last_change:
+        keys = sorted({str(key) for key in last_change.get("changed_keys", []) if key})
+        if keys:
+            changed_at = last_change.get("created_at", "")
+            try:
+                when = fmt_pacific(datetime.fromisoformat(changed_at.replace("Z", "+00:00")))
+            except (TypeError, ValueError):
+                when = "time unknown"
+            summary = f"{', '.join(keys)}\n{when}"
+            e.add_field(name="Last config change", value=summary[:1024], inline=False)
+            bits.append(f"config changed {when}")
     # Plain-text mirror: some clients have embeds switched off entirely.
     text = f"**{info.get('servername', 'Palworld Server')}** - " + " | ".join(bits) if bits else "Server is up."
     await interaction.followup.send(content=text, embed=e)
