@@ -1,9 +1,10 @@
 //! App settings (JSON on disk) + secrets (Windows Credential Manager via keyring).
-//! Non-secret config lives in settings.json under the app config dir.
-//! FTP password + Palworld AdminPassword never touch disk — they go in the OS keychain.
+//! Non-secret config lives in settings.json under the app config dir. Existing
+//! DPAPI-encrypted automation credentials are migrated into the keyring on first use.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -110,4 +111,90 @@ pub fn get_secret(key: &str) -> Option<String> {
 
 pub fn has_secret(key: &str) -> bool {
     get_secret(key).is_some()
+}
+
+#[cfg(windows)]
+fn read_legacy_dpapi_secret(path: &Path) -> Result<String, String> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+    let script = r#"
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$secure = Get-Content -LiteralPath $env:PALCMD_MIGRATE_SECRET_PATH | ConvertTo-SecureString
+$pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+try {
+  [Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer))
+} finally {
+  [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
+}
+"#;
+    let output = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .env("PALCMD_MIGRATE_SECRET_PATH", path)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("could not start the local DPAPI migration: {e}"))?;
+    if !output.status.success() {
+        return Err("the existing local DPAPI credential could not be decrypted".into());
+    }
+    let secret = String::from_utf8(output.stdout)
+        .map_err(|_| "the existing local credential was not valid UTF-8".to_string())?;
+    if secret.is_empty() {
+        return Err("the existing local credential was empty".into());
+    }
+    Ok(secret)
+}
+
+#[cfg(not(windows))]
+fn read_legacy_dpapi_secret(_path: &Path) -> Result<String, String> {
+    Err("legacy DPAPI migration is only available on Windows".into())
+}
+
+pub fn migrate_legacy_secrets(config_dir: &Path) -> Result<bool, String> {
+    let legacy_dir = config_dir.join("auto");
+    let mappings = [
+        (KEY_FTP_PASSWORD, legacy_dir.join("sftp.sec")),
+        (KEY_ADMIN_PASSWORD, legacy_dir.join("admin.sec")),
+    ];
+    let mut migrated = false;
+    for (key, path) in mappings {
+        if has_secret(key) || !path.is_file() {
+            continue;
+        }
+        let secret = read_legacy_dpapi_secret(&path)?;
+        set_secret(key, &secret)?;
+        migrated = true;
+    }
+    Ok(migrated)
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::read_legacy_dpapi_secret;
+    use std::process::Command;
+
+    #[test]
+    fn decrypts_legacy_dpapi_secret_without_plaintext_on_disk() {
+        let path = std::env::temp_dir().join(format!(
+            "palcommand-dpapi-test-{}.sec",
+            std::process::id()
+        ));
+        let script = r#"
+$secure = $env:PALCMD_TEST_SECRET | ConvertTo-SecureString -AsPlainText -Force
+$secure | ConvertFrom-SecureString | Set-Content -LiteralPath $env:PALCMD_TEST_PATH -Encoding ascii
+"#;
+        let status = Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .env("PALCMD_TEST_SECRET", "local-test-secret")
+            .env("PALCMD_TEST_PATH", &path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert_eq!(
+            read_legacy_dpapi_secret(&path).unwrap(),
+            "local-test-secret"
+        );
+        let _ = std::fs::remove_file(path);
+    }
 }

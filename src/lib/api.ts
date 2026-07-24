@@ -20,7 +20,7 @@ export interface AppSettings {
   schedule_minutes: number;
 }
 
-export interface SecretsPresent { ftp: boolean; admin: boolean; }
+export interface SecretsPresent { ftp: boolean; admin: boolean; migrated: boolean; }
 
 export interface SftpProbe { ok: boolean; message: string; sample: string[]; }
 

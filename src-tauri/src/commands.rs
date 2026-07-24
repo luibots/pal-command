@@ -1,6 +1,6 @@
 use crate::backup::{restore_world, run_backup, BackupReport, RestoreReport};
 use crate::config_store::{
-    get_secret, has_secret, load_settings, save_settings, set_secret, AppSettings,
+    get_secret, has_secret, load_settings, migrate_legacy_secrets, save_settings, set_secret, AppSettings,
     KEY_ADMIN_PASSWORD, KEY_FTP_PASSWORD,
 };
 use crate::palconfig;
@@ -30,14 +30,17 @@ pub fn set_settings(app: tauri::AppHandle, settings: AppSettings) -> Result<(), 
 pub struct SecretsPresent {
     pub ftp: bool,
     pub admin: bool,
+    pub migrated: bool,
 }
 
 #[tauri::command]
-pub fn get_secrets_present() -> SecretsPresent {
-    SecretsPresent {
+pub fn get_secrets_present(app: tauri::AppHandle) -> Result<SecretsPresent, String> {
+    let migrated = migrate_legacy_secrets(&cfg_dir(&app)?)?;
+    Ok(SecretsPresent {
         ftp: has_secret(KEY_FTP_PASSWORD),
         admin: has_secret(KEY_ADMIN_PASSWORD),
-    }
+        migrated,
+    })
 }
 
 #[tauri::command]

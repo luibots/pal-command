@@ -34,6 +34,10 @@ names only. Values are never included. Scheduled backups also compare the redact
 configuration and announce changes made outside the dashboard. `/status` includes the
 most recently delivered config-change summary.
 
+On Windows, PAL COMMAND automatically imports existing DPAPI-encrypted credentials
+from its `auto` directory into Windows Credential Manager. Existing backup and bot
+installations therefore do not require passwords to be entered again.
+
 ### Open PAL COMMAND with Palworld
 
 Install the per-user auto-launch task once:
