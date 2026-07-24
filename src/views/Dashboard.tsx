@@ -13,6 +13,13 @@ interface Props {
 type EvKind = "join" | "leave" | "level" | "op" | "info";
 type Event = { at: number; kind: EvKind; msg: string };
 
+function worldToMap(x: number, y: number): [number, number] {
+  return [
+    (y - 158_000) / 460,
+    (x + 123_000) / 460,
+  ];
+}
+
 const BROADCAST_PRESETS = [
   { label: "Restart 5m", msg: "Server restart in 5 minutes — safe spot up!" },
   { label: "Restart 1m", msg: "Server restart in 60 seconds!" },
@@ -30,6 +37,7 @@ export function Dashboard({ info, metrics, liveOk, settings, secrets }: Props) {
   const [lastBackup, setLastBackup] = useState<string | null>(null);
   const [snapshotCount, setSnapshotCount] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [copiedPlayer, setCopiedPlayer] = useState<string | null>(null);
   const prevIdsRef = useRef<Set<string>>(new Set());
   const prevLevelsRef = useRef<Map<string, number>>(new Map());
 
@@ -138,6 +146,13 @@ export function Dashboard({ info, metrics, liveOk, settings, secrets }: Props) {
     } catch (e) {
       pushEvent("op", `backup failed — ${e}`);
     } finally { setBusy(false); }
+  };
+
+  const copyCoordinates = async (playerKey: string, x: number, y: number) => {
+    const [mapX, mapY] = worldToMap(x, y);
+    await navigator.clipboard.writeText(`${Math.round(mapX)}, ${Math.round(mapY)}`);
+    setCopiedPlayer(playerKey);
+    window.setTimeout(() => setCopiedPlayer(current => current === playerKey ? null : current), 1500);
   };
 
   const liveReady = liveOk === true;
@@ -367,8 +382,12 @@ export function Dashboard({ info, metrics, liveOk, settings, secrets }: Props) {
                 {players.map((p, i) => {
                   const pingLevel = p.ping == null ? 0
                     : p.ping < 60 ? 4 : p.ping < 100 ? 3 : p.ping < 180 ? 2 : 1;
+                  const playerKey = p.userId ?? p.playerId ?? p.name ?? String(i);
+                  const mapPosition = p.location_x != null && p.location_y != null
+                    ? worldToMap(p.location_x, p.location_y)
+                    : null;
                   return (
-                    <div className="player-card" key={p.userId ?? p.playerId ?? i}>
+                    <div className="player-card" key={playerKey}>
                       <div className="player-head">
                         <div className="player-name" title={p.name ?? p.accountName}>
                           {p.name ?? p.accountName ?? "?"}
@@ -394,12 +413,22 @@ export function Dashboard({ info, metrics, liveOk, settings, secrets }: Props) {
                           <strong>{p.building_count}</strong>
                         </div>
                       )}
-                      {p.location_x != null && (
+                      {mapPosition && (
                         <div className="player-row">
-                          <span>POS</span>
-                          <strong>
-                            {`${p.location_x.toFixed(0)}, ${p.location_y?.toFixed(0)}`}
-                          </strong>
+                          <span>MAP POS</span>
+                          <span className="player-position">
+                            <strong title={`Raw world position: ${p.location_x!.toFixed(0)}, ${p.location_y!.toFixed(0)}`}>
+                              {`${Math.round(mapPosition[0])}, ${Math.round(mapPosition[1])}`}
+                            </strong>
+                            <button
+                              className="copy-position"
+                              title="Copy map coordinates"
+                              aria-label={`Copy ${p.name ?? "player"} map coordinates`}
+                              onClick={() => copyCoordinates(playerKey, p.location_x!, p.location_y!)}
+                            >
+                              {copiedPlayer === playerKey ? "Copied" : "Copy"}
+                            </button>
+                          </span>
                         </div>
                       )}
                       {p.userId && (

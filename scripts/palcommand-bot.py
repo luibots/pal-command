@@ -482,7 +482,15 @@ async def cmd_mods(interaction: discord.Interaction):
         description="Run **/getmods** to download the self-installing pack, then tick what you want and Apply.",
         colour=AMBER,
     )
-    lines = ["**Guild Mods** - run **/getmods** to download the self-installing pack."]
+    e.add_field(
+        name="PAL COMMAND companion",
+        value="Use **/players** for live in-game map coordinates. Admins also get copyable coordinates in the Players dashboard.",
+        inline=False,
+    )
+    lines = [
+        "**Guild Mods** - run **/getmods** to download the self-installing pack.",
+        "**PAL COMMAND:** use **/players** for live in-game map coordinates.",
+    ]
     for m in mods:
         label = m.get("name", "?")
         if m.get("version"):

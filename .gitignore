@@ -34,4 +34,17 @@ secrets.local.ini
 
 # Downloaded mod tooling (repak, UAssetGUI, mappings) - fetched on demand by tests
 tools/
+# Generated Python files
+__pycache__/
+*.py[cod]
 
+# Additional credential and local-runtime formats
+.env.*
+!.env.example
+*.sec
+*.pem
+*.key
+*.pfx
+*.local.json
+credentials.local.*
+secrets.local.*

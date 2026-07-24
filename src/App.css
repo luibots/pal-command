@@ -427,6 +427,24 @@ button { font-family: inherit; }
   font-family: var(--font-mono); font-size: 10px; color: var(--sub);
 }
 .player-row strong { color: var(--text); font-weight: 500; }
+.player-position {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.copy-position {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--amber);
+  font: inherit;
+  cursor: pointer;
+}
+.copy-position:hover { color: var(--text); }
+.copy-position:focus-visible {
+  outline: 1px solid var(--amber);
+  outline-offset: 3px;
+}
 
 /* Ping bars */
 .ping-bar { display: flex; gap: 2px; }
