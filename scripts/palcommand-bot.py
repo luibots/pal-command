@@ -83,7 +83,7 @@ def load_last_config_change() -> dict | None:
         return None
 
 
-def claim_config_events() -> tuple[list[dict], list[pathlib.Path]]:
+def claim_discord_events() -> tuple[list[dict], list[pathlib.Path]]:
     AUTO_DIR.mkdir(parents=True, exist_ok=True)
     claimed = list(AUTO_DIR.glob("discord-events.*.processing"))
     if CONFIG_EVENT_QUEUE.exists():
@@ -100,7 +100,7 @@ def claim_config_events() -> tuple[list[dict], list[pathlib.Path]]:
             for line in path.read_text(encoding="utf-8").splitlines():
                 try:
                     event = json.loads(line)
-                    if event.get("event_type") == "config_changed":
+                    if event.get("event_type") in {"config_changed", "guild_location"}:
                         events.append(event)
                 except json.JSONDecodeError:
                     log.warning("ignored malformed Discord event in %s", path.name)
@@ -313,10 +313,45 @@ class PalBot(discord.Client):
 
     @tasks.loop(seconds=10)
     async def watch_config_events(self):
-        events, claimed = claim_config_events()
+        events, claimed = claim_discord_events()
         retry = []
         try:
             for event in events:
+                if event.get("event_type") == "guild_location":
+                    try:
+                        x = float(event["x"])
+                        y = float(event["y"])
+                    except (KeyError, TypeError, ValueError):
+                        log.warning("ignored malformed guild location event")
+                        continue
+                    if abs(x) > 5000 or abs(y) > 5000:
+                        log.warning("ignored out-of-range guild location event")
+                        continue
+
+                    name = str(event.get("name") or "Vendor")[:100]
+                    fast_travel = str(event.get("fast_travel") or "Unknown")[:100]
+                    route = str(event.get("route") or "Route unavailable")[:500]
+                    requested_by = str(event.get("requested_by") or "Guild member")[:40]
+                    level = event.get("level")
+                    level_text = f"Level {int(level)} area" if isinstance(level, int) else "Level unknown"
+                    coordinates = f"{x:g}, {y:g}"
+                    e = discord.Embed(
+                        title=f"Guild vendor sighting: {name}",
+                        description=f"**{coordinates}** · {level_text}",
+                        colour=AMBER,
+                        timestamp=datetime.now(timezone.utc),
+                    )
+                    e.add_field(name="Fast travel", value=fast_travel, inline=True)
+                    e.add_field(name="Shared by", value=requested_by, inline=True)
+                    e.add_field(name="Route", value=route, inline=False)
+                    text = (
+                        f"**Guild vendor sighting: {name}** - {coordinates}. "
+                        f"Fast travel: {fast_travel}. Shared by {requested_by}."
+                    )
+                    if not await self.alert(e, text):
+                        retry.append(event)
+                    continue
+
                 keys = sorted({str(key) for key in event.get("changed_keys", []) if key})
                 if not keys:
                     continue
