@@ -24,6 +24,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -218,6 +219,25 @@ class PalAPI:
         if isinstance(data, dict):
             return data.get("players", [])
         return data
+
+    async def _post(self, path: str, payload: dict) -> bool:
+        if not self.base:
+            return False
+        url = f"{self.base}/v1/api/{path}"
+        try:
+            timeout = aiohttp.ClientTimeout(total=10)
+            async with aiohttp.ClientSession(timeout=timeout) as s:
+                async with s.post(url, auth=self.auth, json=payload) as r:
+                    return r.status in (200, 204)
+        except Exception as e:  # noqa: BLE001
+            log.debug("POST %s failed: %s", path, e)
+            return False
+
+    async def announce(self, message: str) -> bool:
+        return await self._post("announce", {"message": message})
+
+    async def shutdown(self, waittime: int, message: str) -> bool:
+        return await self._post("shutdown", {"waittime": waittime, "message": message})
 
 
 class PalBot(discord.Client):
@@ -678,6 +698,119 @@ async def cmd_getmods(interaction: discord.Interaction):
         "_Close Palworld first. Steam version only._"
     )
     await interaction.followup.send(content=msg, file=discord.File(out, filename="GuildMods.zip"))
+
+
+# ---------------------------------------------------------------- guarded restart
+
+RESTART_COOLDOWN_SEC = 30 * 60          # anti-spam: at most one restart per 30 min
+_restart_lock = asyncio.Lock()          # no two restarts running at once
+_last_restart_file = CFG_DIR / "auto" / "last_restart.txt"
+BACKUP_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "palcommand-backup.ps1")
+
+
+def _restart_cooldown_remaining() -> int:
+    try:
+        ts = float(_last_restart_file.read_text().strip())
+    except Exception:  # noqa: BLE001
+        return 0
+    return max(0, int(RESTART_COOLDOWN_SEC - (time.time() - ts)))
+
+
+def _mark_restart() -> None:
+    try:
+        _last_restart_file.parent.mkdir(parents=True, exist_ok=True)
+        _last_restart_file.write_text(str(time.time()))
+    except Exception as e:  # noqa: BLE001
+        log.error("could not record restart time: %s", e)
+
+
+@bot.tree.command(name="restart", description="Gracefully restart the server (warns players, backs up first)")
+async def cmd_restart(interaction: discord.Interaction):
+    remaining = _restart_cooldown_remaining()
+    if remaining > 0:
+        await interaction.response.send_message(
+            f"⏳ Restart is on cooldown - try again in {remaining // 60}m {remaining % 60}s.")
+        return
+    if _restart_lock.locked():
+        await interaction.response.send_message("🔄 A restart is already running - hang tight.")
+        return
+
+    await interaction.response.defer()
+    async with _restart_lock:
+        if _restart_cooldown_remaining() > 0:
+            await interaction.followup.send("A restart just ran - please wait for the cooldown.")
+            return
+
+        info = await bot.api.info()
+        if info is None:
+            await interaction.followup.send(
+                "The server isn't answering right now. If it's down it should auto-recover shortly; "
+                "otherwise an admin can hit Restart in the Host Havoc panel.")
+            return
+
+        # Burn the cooldown up front so the button can't be double-fired mid-flow.
+        _mark_restart()
+        msg = await interaction.followup.send("**Guarded restart** - starting…", wait=True)
+
+        async def step(text: str):
+            try:
+                await msg.edit(content=f"**Guarded restart**\n{text}")
+            except Exception:  # noqa: BLE001
+                pass
+
+        try:
+            players = await bot.api.players() or []
+
+            # 1) Warn players in-game with a countdown (this is the "graceful" part).
+            if players:
+                await step(f"⚠️ {len(players)} player(s) online — warning them, restarting in 60s…")
+                for announce_at, sleep_for in ((60, 30), (30, 20), (10, 10)):
+                    await bot.api.announce(f"Server restart in {announce_at} seconds - get somewhere safe!")
+                    await asyncio.sleep(sleep_for)
+            else:
+                await step("No players online — proceeding.")
+                await bot.api.announce("Server restarting shortly for a scheduled backup.")
+                await asyncio.sleep(3)
+
+            # 2) Verified, off-site backup FIRST (never restart without a safe snapshot).
+            await step("💾 Creating a verified off-site backup…")
+            proc = await asyncio.to_thread(
+                subprocess.run,
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", BACKUP_SCRIPT, "-Quiet"],
+                capture_output=True, text=True, timeout=300,
+            )
+            if proc.returncode != 0:
+                await step("❌ Backup FAILED — restart aborted, server left running. Ping the admin.")
+                log.error("restart backup failed rc=%s: %s", proc.returncode, (proc.stderr or "")[:500])
+                return
+
+            # 3) Restart. Host Havoc's watchdog brings it back after shutdown.
+            await bot.api.announce("Backup complete - restarting now!")
+            await step("🔁 Backup verified. Restarting the server…")
+            await bot.api.shutdown(10, "Server restarting now")
+
+            # 4) Confirm recovery: wait for it to drop, then come back.
+            start = time.monotonic()
+            saw_down = False
+            recovered = None
+            while time.monotonic() - start < 180:
+                await asyncio.sleep(5)
+                up = (await bot.api.info()) is not None
+                if not up:
+                    saw_down = True
+                elif saw_down:
+                    recovered = int(time.monotonic() - start)
+                    break
+
+            if recovered is not None:
+                await step(f"✅ Back online — recovered in {recovered}s. Verified backup is safe off-site.")
+            else:
+                await step(
+                    "⚠️ Backup is safe and shutdown was sent, but recovery wasn't confirmed within 180s. "
+                    "It may still be booting — give it a minute, or an admin can check the panel.")
+        except Exception as e:  # noqa: BLE001
+            log.error("restart flow error: %s", e)
+            await step(f"❌ Restart hit an error: {e}. Your backup may still be safe — check with the admin.")
 
 
 def main():
