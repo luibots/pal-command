@@ -60,6 +60,20 @@ GREEN = 0x22C55E
 RED = 0xEF4444
 GREY = 0x6B7280
 
+WELCOME_ENABLED = os.environ.get("PALCMD_WELCOME_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+WELCOME_RECONNECT_COOLDOWN_SEC = 30 * 60
+WELCOME_TIPS = (
+    "Discord /players shows the live roster.",
+    "Discord /getmods has the supported guild mod installer.",
+    "PAL Companion can find pals, materials, vendors, and map coordinates.",
+    "Press R in your inventory at a base to use Easy Bulk Storage.",
+)
+
 CFG_DIR = pathlib.Path(os.environ["APPDATA"]) / "com.luibots.palcommand"
 SETTINGS = CFG_DIR / "settings.json"
 AUTO_DIR = CFG_DIR / "auto"
@@ -161,6 +175,32 @@ def human_uptime(seconds) -> str:
     return f"{m}m"
 
 
+def player_session_key(player: dict) -> str:
+    """Return a stable, non-secret identifier for join/leave comparisons."""
+    for field in ("playerId", "userId", "accountName", "name"):
+        value = str(player.get(field) or "").strip()
+        if value:
+            return f"{field}:{value.casefold()}"
+    return ""
+
+
+def clean_announcement_name(value) -> str:
+    """Keep player-provided text on one short, safe announcement line."""
+    cleaned = " ".join(str(value or "Pal").split())
+    cleaned = "".join(ch for ch in cleaned if ch.isprintable())
+    return cleaned[:32] or "Pal"
+
+
+def build_welcome_message(player_name, day, online_count, tip) -> str:
+    parts = [f"Welcome, {clean_announcement_name(player_name)}!"]
+    if day is not None:
+        parts.append(f"World day {day}")
+    parts.append(f"{online_count} online")
+    if tip:
+        parts.append(f"Tip: {tip}")
+    return " | ".join(parts)[:240]
+
+
 async def fetch_manifest():
     """Read the mod manifest - local repo first (works while the repo is private),
     falling back to the public URL if a local copy isn't present."""
@@ -249,12 +289,16 @@ class PalBot(discord.Client):
         self.api = PalAPI(self.settings.get("rest_url", ""), ADMIN_PW)
         self.last_up = None          # None = unknown yet
         self.known_mods = None       # None = not primed yet
+        self.online_players = None   # None means the join monitor is not primed
+        self.welcome_cooldowns = {}
 
     async def setup_hook(self):
         # NOTE: deliberately no global sync. Registering both globally and per-guild makes
         # every command appear TWICE in the Discord picker. Guild-only sync (in on_ready)
         # is also instant, whereas global commands take up to an hour to propagate.
         self.watch_server.start()
+        if WELCOME_ENABLED:
+            self.watch_player_joins.start()
         self.watch_mods.start()
         self.watch_config_events.start()
 
@@ -309,6 +353,65 @@ class PalBot(discord.Client):
 
     @watch_server.before_loop
     async def _before_watch_server(self):
+        await self.wait_until_ready()
+
+    @tasks.loop(seconds=15)
+    async def watch_player_joins(self):
+        players = await self.api.players()
+        if players is None:
+            return
+
+        current = {
+            key: player
+            for player in players
+            if (key := player_session_key(player))
+        }
+        if self.online_players is None:
+            self.online_players = set(current)
+            log.info("primed welcome monitor (%d player(s) already online)", len(current))
+            return
+
+        previous = self.online_players
+        self.online_players = set(current)
+        joined = sorted(set(current) - previous)
+        if not joined:
+            return
+
+        now = time.monotonic()
+        self.welcome_cooldowns = {
+            key: greeted_at
+            for key, greeted_at in self.welcome_cooldowns.items()
+            if now - greeted_at < WELCOME_RECONNECT_COOLDOWN_SEC
+        }
+        eligible = [
+            key
+            for key in joined
+            if key not in self.welcome_cooldowns
+            or now - self.welcome_cooldowns[key] >= WELCOME_RECONNECT_COOLDOWN_SEC
+        ]
+        if not eligible:
+            return
+
+        metrics = await self.api.metrics()
+        day = metrics.get("days") if metrics else None
+        for key in eligible:
+            player = current[key]
+            name = player.get("name") or player.get("accountName") or "Pal"
+            tip_index = sum(key.encode("utf-8")) % len(WELCOME_TIPS)
+            message = build_welcome_message(
+                name,
+                day,
+                len(current),
+                WELCOME_TIPS[tip_index],
+            )
+            if await self.api.announce(message):
+                self.welcome_cooldowns[key] = now
+                log.info("welcomed player %s", clean_announcement_name(name))
+            else:
+                log.warning("welcome announcement failed for %s", clean_announcement_name(name))
+
+    @watch_player_joins.before_loop
+    async def _before_watch_player_joins(self):
         await self.wait_until_ready()
 
     @tasks.loop(seconds=10)
