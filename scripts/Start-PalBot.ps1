@@ -8,7 +8,11 @@
   Run -Check to validate setup without starting the bot.
 #>
 [CmdletBinding()]
-param([switch]$Check)
+param(
+  [switch]$Check,
+  [switch]$Once,
+  [int]$RestartDelaySeconds = 10
+)
 
 $ErrorActionPreference = 'Stop'
 $autoDir = Join-Path $env:APPDATA 'com.luibots.palcommand\auto'
@@ -18,8 +22,13 @@ function Read-Sec([string]$name) {
   $p = Join-Path $autoDir "$name.sec"
   if (-not (Test-Path $p)) { return $null }
   $sec = Get-Content $p | ConvertTo-SecureString
-  [Runtime.InteropServices.Marshal]::PtrToStringAuto(
-    [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
+  $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+  try {
+    [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+  }
+  finally {
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+  }
 }
 
 $token = Read-Sec 'discord_token'
@@ -51,13 +60,45 @@ $env:PALCMD_ADMIN_PW        = $adminPw
 $env:PALCMD_MODS_REPO       = 'C:\Users\llllllllllllllllllll\projects\palworld-mods'
 
 $log = Join-Path $autoDir 'bot.log'
-Write-Host "Starting PAL COMMAND Discord bot... (log: $log)"
-("[{0}] --- bot starting ---" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) | Add-Content -Path $log -Encoding utf8
+$mutex = [Threading.Mutex]::new($false, 'Local\PalCommandDiscordBot')
+$ownsMutex = $false
+try {
+  try {
+    $ownsMutex = $mutex.WaitOne(0, $false)
+  }
+  catch [Threading.AbandonedMutexException] {
+    $ownsMutex = $true
+  }
+  if (-not $ownsMutex) {
+    Write-Host 'PAL COMMAND Discord bot is already supervised by another process.'
+    return
+  }
 
-# discord.py logs to stderr. Under $ErrorActionPreference='Stop', piping native stderr
-# with 2>&1 raises NativeCommandError and kills the launcher - so drop to Continue and
-# redirect every stream straight to the log file instead of through a pipeline.
-$ErrorActionPreference = 'Continue'
-# (*>> writes UTF-16 in PS 5.1, which makes the log unreadable - pipe to Out-File as UTF-8.
-#  Safe to use a pipeline here now that ErrorActionPreference is Continue.)
-& python $botPy *>&1 | Out-File -FilePath $log -Append -Encoding utf8
+  Write-Host "Starting PAL COMMAND Discord bot supervisor... (log: $log)"
+  do {
+    ("[{0}] --- bot starting ---" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')) |
+      Add-Content -Path $log -Encoding utf8
+
+    # discord.py logs to stderr. Native stderr becomes a non-terminating
+    # NativeCommandError in Windows PowerShell, so keep Continue while the child runs.
+    $ErrorActionPreference = 'Continue'
+    & python $botPy *>&1 | Out-File -FilePath $log -Append -Encoding utf8
+    $exitCode = $LASTEXITCODE
+    $ErrorActionPreference = 'Stop'
+
+    ("[{0}] --- bot exited ({1}); {2} ---" -f (
+      Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    ), $exitCode, $(if ($Once) { 'supervisor stopping' } else { 'restarting' })) |
+      Add-Content -Path $log -Encoding utf8
+
+    if (-not $Once) {
+      Start-Sleep -Seconds ([Math]::Max(2, $RestartDelaySeconds))
+    }
+  } while (-not $Once)
+}
+finally {
+  if ($ownsMutex) {
+    $mutex.ReleaseMutex()
+  }
+  $mutex.Dispose()
+}
