@@ -38,6 +38,12 @@ On Windows, PAL COMMAND automatically imports existing DPAPI-encrypted credentia
 from its `auto` directory into Windows Credential Manager. Existing backup and bot
 installations therefore do not require passwords to be entered again.
 
+The supervised Discord bot detects player joins through the Palworld REST API. It
+asks the loopback Pal Companion service to construct a contextual welcome from the
+server name, world day, online roster, and persistent visit history, then broadcasts
+the result in game. If the constructor is unavailable, the bot falls back to a short
+local template instead of dropping the welcome.
+
 ### Open PAL COMMAND with Palworld
 
 Install the per-user auto-launch task once:

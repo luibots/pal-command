@@ -67,6 +67,10 @@ WELCOME_ENABLED = os.environ.get("PALCMD_WELCOME_ENABLED", "1").strip().lower() 
     "off",
 }
 WELCOME_RECONNECT_COOLDOWN_SEC = 30 * 60
+WELCOME_MESSAGE_SERVICE_URL = os.environ.get(
+    "PALCMD_WELCOME_SERVICE_URL",
+    "http://127.0.0.1:8765/internal/welcome-message",
+).strip()
 WELCOME_TIPS = (
     "Discord /players shows the live roster.",
     "Discord /getmods has the supported guild mod installer.",
@@ -280,6 +284,43 @@ class PalAPI:
         return await self._post("shutdown", {"waittime": waittime, "message": message})
 
 
+class WelcomeMessageClient:
+    def __init__(self, url: str):
+        self.url = url
+
+    async def construct(
+        self,
+        *,
+        player_key: str,
+        player_name: str,
+        world_day,
+        online_players: list[str],
+        server_name: str | None,
+    ) -> str | None:
+        if not self.url:
+            return None
+        payload = {
+            "player_key": player_key,
+            "player_name": player_name,
+            "world_day": world_day,
+            "online_players": online_players,
+            "server_name": server_name,
+        }
+        try:
+            timeout = aiohttp.ClientTimeout(total=3)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(self.url, json=payload) as response:
+                    if response.status != 200:
+                        log.warning("welcome message service -> HTTP %s", response.status)
+                        return None
+                    data = await response.json(content_type=None)
+        except Exception as error:  # noqa: BLE001
+            log.debug("welcome message service unavailable: %s", error)
+            return None
+        message = str(data.get("message") or "").strip()
+        return message[:240] or None
+
+
 class PalBot(discord.Client):
     def __init__(self):
         intents = discord.Intents.default()
@@ -287,6 +328,7 @@ class PalBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
         self.settings = load_settings()
         self.api = PalAPI(self.settings.get("rest_url", ""), ADMIN_PW)
+        self.welcome_messages = WelcomeMessageClient(WELCOME_MESSAGE_SERVICE_URL)
         self.last_up = None          # None = unknown yet
         self.known_mods = None       # None = not primed yet
         self.online_players = None   # None means the join monitor is not primed
@@ -392,18 +434,35 @@ class PalBot(discord.Client):
         if not eligible:
             return
 
-        metrics = await self.api.metrics()
+        metrics, info = await asyncio.gather(
+            self.api.metrics(),
+            self.api.info(),
+        )
         day = metrics.get("days") if metrics else None
+        roster = [
+            clean_announcement_name(
+                player.get("name") or player.get("accountName") or "Pal"
+            )
+            for player in current.values()
+        ]
         for key in eligible:
             player = current[key]
             name = player.get("name") or player.get("accountName") or "Pal"
             tip_index = sum(key.encode("utf-8")) % len(WELCOME_TIPS)
-            message = build_welcome_message(
-                name,
-                day,
-                len(current),
-                WELCOME_TIPS[tip_index],
+            message = await self.welcome_messages.construct(
+                player_key=key,
+                player_name=clean_announcement_name(name),
+                world_day=day,
+                online_players=roster,
+                server_name=info.get("servername") if info else None,
             )
+            if message is None:
+                message = build_welcome_message(
+                    name,
+                    day,
+                    len(current),
+                    WELCOME_TIPS[tip_index],
+                )
             if await self.api.announce(message):
                 self.welcome_cooldowns[key] = now
                 log.info("welcomed player %s", clean_announcement_name(name))
