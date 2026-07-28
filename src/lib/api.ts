@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 
+const demoMode =
+  typeof window !== "undefined" &&
+  new URLSearchParams(window.location.search).get("demo") === "1";
+
 export interface AppSettings {
   sftp_host: string;
   sftp_port: number;
@@ -94,37 +98,131 @@ export interface PalConfigView {
 
 export interface ModEntry { name: string; kind: string; path: string; }
 
+const demoSettings: AppSettings = {
+  sftp_host: "palworld-admin.invalid",
+  sftp_port: 22,
+  sftp_user: "demo-admin",
+  save_games_path: "/Pal/Saved/SaveGames/0",
+  config_dir: "/Pal/Saved/Config/WindowsServer",
+  rest_url: "http://palworld-admin.invalid:8212",
+  rest_enabled: true,
+  rcon_host: "",
+  rcon_port: 25575,
+  rcon_enabled: false,
+  repo_local_path: "C:\\Palworld\\WorldBackups",
+  repo_remote: "",
+  git_branch: "main",
+  backup_retention: 14,
+  stop_before_backup: false,
+  schedule_enabled: true,
+  schedule_minutes: 30,
+};
+
+function demoResult<T>(command: string): Promise<T> {
+  const now = Date.now();
+  const fixtures: Record<string, unknown> = {
+    get_settings: demoSettings,
+    get_secrets_present: { ftp: true, admin: true, migrated: true },
+    live_info: {
+      source: "rest",
+      servername: "AYEGUILD // SANITIZED DEMO",
+      version: "v1.0.1",
+      worldguid: "demo0001",
+    },
+    live_metrics: {
+      source: "rest",
+      currentplayernum: 3,
+      maxplayernum: 32,
+      serverfps: 59.7,
+      serverframetime: 16.75,
+      uptime: 268_740,
+      basecampnum: 8,
+      days: 674,
+    },
+    live_players: [
+      {
+        name: "Builder",
+        userId: "demo-player-01",
+        ping: 31,
+        location_x: -168_080,
+        location_y: 210_900,
+        level: 44,
+        building_count: 186,
+      },
+      {
+        name: "Scout",
+        userId: "demo-player-02",
+        ping: 54,
+        location_x: -91_720,
+        location_y: 137_760,
+        level: 39,
+        building_count: 74,
+      },
+      {
+        name: "Rancher",
+        userId: "demo-player-03",
+        ping: 42,
+        location_x: -45_180,
+        location_y: 301_700,
+        level: 41,
+        building_count: 121,
+      },
+    ],
+    backup_history: [
+      {
+        name: "world-20260727-2118.zip",
+        bytes: 2_340_000,
+        modified: new Date(now - 12 * 60_000).toISOString(),
+      },
+      {
+        name: "world-20260727-2048.zip",
+        bytes: 2_310_000,
+        modified: new Date(now - 42 * 60_000).toISOString(),
+      },
+    ],
+    backup_offsite_status: true,
+    config_load: { pairs: [], source: "sanitized demo" },
+    mods_list: [],
+  };
+  if (command in fixtures) return Promise.resolve(fixtures[command] as T);
+  return Promise.reject(new Error("Write operations are disabled in screenshot demo mode."));
+}
+
+function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  return demoMode ? demoResult<T>(command) : invoke<T>(command, args);
+}
+
 export const api = {
-  getSettings: () => invoke<AppSettings>("get_settings"),
-  setSettings: (settings: AppSettings) => invoke<void>("set_settings", { settings }),
-  getSecretsPresent: () => invoke<SecretsPresent>("get_secrets_present"),
-  setFtpPassword: (password: string) => invoke<void>("set_ftp_password", { password }),
-  setAdminPassword: (password: string) => invoke<void>("set_admin_password", { password }),
-  probeFtp: () => invoke<SftpProbe>("probe_ftp"),
+  getSettings: () => call<AppSettings>("get_settings"),
+  setSettings: (settings: AppSettings) => call<void>("set_settings", { settings }),
+  getSecretsPresent: () => call<SecretsPresent>("get_secrets_present"),
+  setFtpPassword: (password: string) => call<void>("set_ftp_password", { password }),
+  setAdminPassword: (password: string) => call<void>("set_admin_password", { password }),
+  probeFtp: () => call<SftpProbe>("probe_ftp"),
 
-  liveInfo: () => invoke<LiveInfo>("live_info"),
-  liveMetrics: () => invoke<LiveMetrics>("live_metrics"),
-  livePlayers: () => invoke<LivePlayer[]>("live_players"),
-  liveAnnounce: (message: string) => invoke<void>("live_announce", { message }),
-  liveSave: () => invoke<void>("live_save"),
-  liveStop: () => invoke<void>("live_stop"),
+  liveInfo: () => call<LiveInfo>("live_info"),
+  liveMetrics: () => call<LiveMetrics>("live_metrics"),
+  livePlayers: () => call<LivePlayer[]>("live_players"),
+  liveAnnounce: (message: string) => call<void>("live_announce", { message }),
+  liveSave: () => call<void>("live_save"),
+  liveStop: () => call<void>("live_stop"),
   liveKick: (userid: string, message: string) =>
-    invoke<void>("live_kick", { userid, message }),
+    call<void>("live_kick", { userid, message }),
   liveBan: (userid: string, message: string) =>
-    invoke<void>("live_ban", { userid, message }),
+    call<void>("live_ban", { userid, message }),
 
-  backupNow: () => invoke<BackupReport>("backup_now"),
-  safeRestart: () => invoke<SafeRestartReport>("safe_restart"),
-  backupHistory: () => invoke<BackupHistoryItem[]>("backup_history"),
+  backupNow: () => call<BackupReport>("backup_now"),
+  safeRestart: () => call<SafeRestartReport>("safe_restart"),
+  backupHistory: () => call<BackupHistoryItem[]>("backup_history"),
   restoreBackup: (archiveName: string) =>
-    invoke<RestoreReport>("restore_backup", { archiveName }),
-  backupOffsiteStatus: () => invoke<boolean>("backup_offsite_status"),
+    call<RestoreReport>("restore_backup", { archiveName }),
+  backupOffsiteStatus: () => call<boolean>("backup_offsite_status"),
 
-  configLoad: () => invoke<PalConfigView>("config_load"),
+  configLoad: () => call<PalConfigView>("config_load"),
   configSave: (updates: [string, string][]) =>
-    invoke<string>("config_save", { updates }),
+    call<string>("config_save", { updates }),
 
-  modsList: () => invoke<ModEntry[]>("mods_list"),
+  modsList: () => call<ModEntry[]>("mods_list"),
 };
 
 export function humanBytes(n: number): string {

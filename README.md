@@ -8,6 +8,12 @@ that can actually *see* your server.
 
 > Status: v0, in active development. Desktop app (Tauri + React). Windows-first.
 
+![PAL COMMAND dashboard with sanitized server telemetry](docs/screenshots/dashboard.jpg)
+
+The screenshot uses the inert `?demo=1` browser preview. Names, IDs, coordinates,
+paths, and server details are fixtures; no live server credentials or private data
+are included.
+
 ---
 
 ## Why it's a desktop app (on purpose)
