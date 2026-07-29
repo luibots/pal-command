@@ -130,11 +130,38 @@ else {
     $mf = (Get-Content $manifestPath -Raw -Encoding UTF8) | ConvertFrom-Json
     Ok "mods.json parses ($($mf.mods.Count) mod(s))"
     foreach ($m in $mf.mods) {
-      $pak = Join-Path $modsRepo ($m.file -replace '/', '\')
-      if (-not (Test-Path $pak)) { Bad "mod '$($m.id)': file missing ($($m.file))"; continue }
-      $sha = (Get-FileHash $pak -Algorithm SHA256).Hash.ToLower()
-      if ($sha -eq ([string]$m.sha256).ToLower()) { Ok "mod '$($m.id)': sha256 matches manifest" }
-      else { Bad "mod '$($m.id)': SHA MISMATCH - the manager will refuse to install it" }
+      if ($m.file) {
+        $pak = Join-Path $modsRepo ($m.file -replace '/', '\')
+        if (-not (Test-Path $pak)) { Bad "mod '$($m.id)': file missing ($($m.file))"; continue }
+        $sha = (Get-FileHash $pak -Algorithm SHA256).Hash.ToLower()
+        if ($sha -eq ([string]$m.sha256).ToLower()) { Ok "mod '$($m.id)': sha256 matches manifest" }
+        else { Bad "mod '$($m.id)': SHA MISMATCH - the manager will refuse to install it" }
+        continue
+      }
+
+      if ($m.sourceDir -and $m.files) {
+        $badFiles = 0
+        foreach ($entry in $m.files) {
+          $relative = (Join-Path $m.sourceDir $entry.path) -replace '/', '\'
+          $file = Join-Path $modsRepo $relative
+          if (-not (Test-Path $file)) {
+            Bad "mod '$($m.id)': file missing ($relative)"
+            $badFiles++
+            continue
+          }
+          $sha = (Get-FileHash $file -Algorithm SHA256).Hash.ToLower()
+          if ($sha -ne ([string]$entry.sha256).ToLower()) {
+            Bad "mod '$($m.id)': SHA MISMATCH ($relative)"
+            $badFiles++
+          }
+        }
+        if ($badFiles -eq 0) {
+          Ok "mod '$($m.id)': $($m.files.Count) file hash(es) match manifest"
+        }
+        continue
+      }
+
+      Bad "mod '$($m.id)': unsupported manifest entry"
     }
   } catch { Bad "mods.json is invalid JSON: $_" }
 }
