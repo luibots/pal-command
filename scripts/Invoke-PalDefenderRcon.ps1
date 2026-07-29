@@ -1,7 +1,13 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory)]
-  [ValidateSet('Version', 'GrantItem', 'GrantTechnologyPoints', 'GrantAncientTechnologyPoints')]
+  [ValidateSet(
+    'Version',
+    'ReloadConfig',
+    'GrantItem',
+    'GrantTechnologyPoints',
+    'GrantAncientTechnologyPoints'
+  )]
   [string]$Action,
   [string]$ItemId = '',
   [ValidateRange(1, 999999)]
@@ -33,6 +39,9 @@ $playerId = Read-EnvValue 'ADMIN_SUPPLY_PLAYER_ID'
 switch ($Action) {
   'Version' {
     $command = 'version'
+  }
+  'ReloadConfig' {
+    $command = 'reloadcfg'
   }
   'GrantItem' {
     if (-not $playerId) {
