@@ -15,7 +15,15 @@ $launcher = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot 'Start-PalBot.ps
 $arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden " +
   "-File `"$launcher`""
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $arguments
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$triggers = @(
+  (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME),
+  # A dead supervisor can exhaust Task Scheduler's finite restart allowance.
+  # This heartbeat wakes it again; IgnoreNew prevents duplicate live instances.
+  (New-ScheduledTaskTrigger `
+    -Once `
+    -At (Get-Date).AddMinutes(1) `
+    -RepetitionInterval (New-TimeSpan -Minutes 5))
+)
 $principal = New-ScheduledTaskPrincipal `
   -UserId $env:USERNAME `
   -LogonType Interactive `
@@ -31,7 +39,7 @@ $settings = New-ScheduledTaskSettingsSet `
 Register-ScheduledTask `
   -TaskName $taskName `
   -Action $action `
-  -Trigger $trigger `
+  -Trigger $triggers `
   -Principal $principal `
   -Settings $settings `
   -Description 'Keep the PAL COMMAND Discord bot online and restore it after an unexpected exit.' `
